@@ -19,12 +19,13 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 6. [Configuration](#configuration)
 7. [Getting Started](#getting-started)
 8. [Usage Examples](#usage-examples)
-9. [Status and Telemetry](#status-and-telemetry)
-10. [Optimize Actions](#optimize-actions)
-11. [Uninstall and Leftovers](#uninstall-and-leftovers)
-12. [Keyboard Shortcuts](#keyboard-shortcuts)
-13. [Testing](#testing)
-14. [Roadmap](#roadmap)
+9. [Icon Pack](#icon-pack)
+10. [Status and Telemetry](#status-and-telemetry)
+11. [Optimize Actions](#optimize-actions)
+12. [Uninstall and Leftovers](#uninstall-and-leftovers)
+13. [Keyboard Shortcuts](#keyboard-shortcuts)
+14. [Testing](#testing)
+15. [Roadmap](#roadmap)
 
 ## Features
 
@@ -127,6 +128,23 @@ py mole.py uninstall --json --query zoom --limit 20 --leftovers
 
 py mole.py status --json
 py mole.py completion --shell powershell --install
+```
+
+## Icon Pack
+
+Application icon assets are under:
+
+- `assets/branding/wmole-logo.svg` (source)
+- `assets/branding/wmole-logo-1024.png` (raster source)
+- `assets/icons/desktop/` (`wmole.ico`, `wmole.icns`, Linux hicolor set, tray icons)
+- `assets/icons/web/` (favicon + PWA icons)
+
+Regenerate with the `web-asset-generator` skill scripts:
+
+```cmd
+py C:\Users\umuti\.codex\skills\web-asset-generator\scripts\rasterize_svg.py assets/branding/wmole-logo.svg -o assets/branding/wmole-logo-1024.png -s 1024
+py C:\Users\umuti\.codex\skills\web-asset-generator\scripts\generate_desktop_icons.py assets/branding/wmole-logo-1024.png -o assets/icons/desktop --name wmole --targets all
+set PYTHONUTF8=1 && py C:\Users\umuti\.codex\skills\web-asset-generator\scripts\generate_favicons.py assets/branding/wmole-logo-1024.png assets/icons/web all
 ```
 
 ## Status and Telemetry

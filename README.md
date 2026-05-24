@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/wmole-banner.png" alt="wmole banner" width="100%">
+</p>
+
 # wmole
 
 Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal maintenance toolkit for cleanup, artifact purge, uninstall leftovers, optimize actions, and live system status.

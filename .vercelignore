@@ -1,0 +1,17 @@
+__pycache__/
+build/
+dist/
+release/
+installer/
+tests/
+scripts/
+temp_repo/
+.git/
+.gitignore
+wmole.spec
+mole.py
+requirements.txt
+setup.bat
+run.bat
+debug.bat
+README.md

@@ -5,3 +5,5 @@ build/
 dist/
 release/
 *.spec
+
+.vercel

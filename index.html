@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wmole — Windows System Optimization & TUI Toolkit</title>
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="assets/icons/web/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/web/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/web/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/icons/web/favicon-16x16.png">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            border: 'hsl(var(--border))',
+            input: 'hsl(var(--input))',
+            ring: 'hsl(var(--ring))',
+            background: 'hsl(var(--background))',
+            foreground: 'hsl(var(--foreground))',
+            primary: {
+              DEFAULT: 'hsl(var(--primary))',
+              foreground: 'hsl(var(--primary-foreground))',
+            },
+            secondary: {
+              DEFAULT: 'hsl(var(--secondary))',
+              foreground: 'hsl(var(--secondary-foreground))',
+            },
+            destructive: {
+              DEFAULT: 'hsl(var(--destructive))',
+              foreground: 'hsl(var(--destructive-foreground))',
+            },
+            muted: {
+              DEFAULT: 'hsl(var(--muted))',
+              foreground: 'hsl(var(--muted-foreground))',
+            },
+            accent: {
+              DEFAULT: 'hsl(var(--accent))',
+              foreground: 'hsl(var(--accent-foreground))',
+            },
+            card: {
+              DEFAULT: 'hsl(var(--card))',
+              foreground: 'hsl(var(--card-foreground))',
+            },
+          },
+          borderRadius: {
+            lg: 'var(--radius)',
+            md: 'calc(var(--radius) - 2px)',
+            sm: 'calc(var(--radius) - 4px)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
+
+    :root {
+      --background: 0 0% 100%;
+      --foreground: 210 12% 16%;
+      --card: 210 17% 98%;
+      --card-foreground: 210 12% 16%;
+      --primary: 137 66% 38%; /* Vibrant Mint Green */
+      --primary-foreground: 0 0% 100%;
+      --secondary: 210 17% 95%;
+      --secondary-foreground: 210 12% 16%;
+      --muted: 210 17% 95%;
+      --muted-foreground: 210 9% 43%;
+      --border: 210 14% 85%;
+      --input: 210 14% 85%;
+      --ring: 137 66% 38%;
+      --radius: 0.5rem;
+    }
+
+    .dark {
+      --background: 215 28% 7%;
+      --foreground: 210 14% 89%;
+      --card: 216 22% 11%;
+      --card-foreground: 210 14% 89%;
+      --primary: 137 66% 42%;
+      --primary-foreground: 0 0% 100%;
+      --secondary: 215 14% 15%;
+      --secondary-foreground: 210 14% 89%;
+      --muted: 215 14% 15%;
+      --muted-foreground: 215 9% 56%;
+      --border: 215 14% 21%;
+      --input: 215 14% 21%;
+      --ring: 137 66% 42%;
+    }
+
+    * {
+      border-color: hsl(var(--border));
+      transition: background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    body {
+      background-color: hsl(var(--background));
+      color: hsl(var(--foreground));
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    .code-font {
+      font-family: 'Fira Code', monospace;
+    }
+
+    /* Tab Page Transitions */
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- Header -->
+  <header class="border-b sticky top-0 bg-background/80 backdrop-blur-md z-50">
+    <div class="mx-auto flex max-w-4xl items-center justify-between px-4 sm:px-6 py-4">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2.5">
+          <a href="#" onclick="switchTab('home')" class="flex items-center gap-2.5 group">
+            <img src="assets/icons/desktop/hicolor/512x512/apps/wmole.png" alt="wmole" class="w-8 h-8 rounded-lg shrink-0 group-hover:scale-105 transition-transform" />
+            <h1 class="text-lg sm:text-xl font-bold text-foreground truncate">wmole</h1>
+          </a>
+        </div>
+        <p class="text-xs sm:text-sm text-muted-foreground mt-0.5">
+          Windows System Optimization &amp; TUI Maintenance Toolkit
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="theme-toggle-btn" onclick="toggleTheme()" class="rounded-md border p-2 text-foreground hover:bg-muted transition-colors" title="Toggle Theme">
+          <i data-lucide="moon" class="w-4 h-4 dark:hidden"></i>
+          <i data-lucide="sun" class="w-4 h-4 hidden dark:block"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- HOME PAGE -->
+  <div id="tab-home" class="tab-content active">
+    <main class="mx-auto max-w-4xl px-4 sm:px-6 py-6 sm:py-10">
+      
+      <!-- Banner / Preview -->
+      <div class="rounded-xl border bg-card p-4 sm:p-8 mb-6 relative overflow-hidden">
+        <div class="flex flex-wrap gap-2 mb-4 sm:mb-6">
+          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-secondary text-secondary-foreground border">
+            Windows 10/11
+          </span>
+          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-secondary text-secondary-foreground border">
+            Python 3.9+
+          </span>
+          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-secondary text-secondary-foreground border">
+            Free &amp; Open Source
+          </span>
+          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-secondary text-secondary-foreground border">
+            CLI &amp; TUI
+          </span>
+        </div>
+
+        <div class="grid gap-6 md:grid-cols-[1fr_auto]">
+          <div class="min-w-0">
+            <div class="flex items-center gap-3 mb-3">
+              <img src="assets/icons/desktop/hicolor/512x512/apps/wmole.png" alt="wmole Logo" class="w-10 h-10 sm:w-12 sm:h-12 rounded-xl shrink-0" />
+              <h2 class="text-xl sm:text-2xl font-bold text-foreground">Deep clean, optimize, and maintain Windows.</h2>
+            </div>
+            <p class="mb-4 text-sm sm:text-base text-muted-foreground leading-relaxed">
+              wmole is a Windows-first toolkit designed to help you deep clean system caches, purge developer artifacts, uninstall software with residual leftover sweeps, and optimize system settings securely via terminal.
+            </p>
+            <p class="mb-4 sm:mb-6 text-xs sm:text-sm text-muted-foreground">
+              Requirements: Windows 10/11 (64-bit), Python 3.9+ (or compiled standalone EXE).
+            </p>
+
+            <div class="flex flex-wrap items-center gap-2 sm:gap-3 mb-6 sm:mb-8">
+              <a
+                href="https://github.com/palamut62/wmole/releases/download/v0.1.0/wmole-0.1.0-setup.exe"
+                class="inline-flex items-center gap-2 rounded-md bg-primary px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity"
+              >
+                <i data-lucide="download" class="w-4 h-4"></i>
+                Download Installer v0.1.0
+              </a>
+              <a
+                href="https://github.com/palamut62/wmole"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center gap-2 rounded-md border px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium text-foreground hover:bg-muted transition-colors"
+              >
+                <i data-lucide="github" class="w-4 h-4"></i>
+                View on GitHub
+              </a>
+            </div>
+
+            <!-- Code Blocks -->
+            <div class="space-y-3 mb-6 sm:mb-8 overflow-x-auto">
+              <div class="rounded-md border bg-background/50 p-2 px-3 flex items-center justify-between gap-3 min-w-[280px]">
+                <div class="flex items-center gap-2 shrink-0">
+                  <span class="text-xs font-semibold text-muted-foreground w-12 text-right">Clone:</span>
+                  <code class="code-font text-xs text-foreground bg-muted/30 px-1.5 py-0.5 rounded select-all">git clone https://github.com/palamut62/wmole.git</code>
+                </div>
+                <button onclick="copyCommand(this, 'git clone https://github.com/palamut62/wmole.git')" class="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground shrink-0 transition-colors" title="Copy">
+                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+
+              <div class="rounded-md border bg-background/50 p-2 px-3 flex items-center justify-between gap-3 min-w-[280px]">
+                <div class="flex items-center gap-2 shrink-0">
+                  <span class="text-xs font-semibold text-muted-foreground w-12 text-right">Install:</span>
+                  <code class="code-font text-xs text-foreground bg-muted/30 px-1.5 py-0.5 rounded select-all">py -m pip install -r requirements.txt &amp;&amp; run.bat</code>
+                </div>
+                <button onclick="copyCommand(this, 'py -m pip install -r requirements.txt && run.bat')" class="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground shrink-0 transition-colors" title="Copy">
+                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+
+            <p class="text-xs sm:text-sm text-muted-foreground mb-4">
+              Built with Python, PyInstaller compiler, Inno Setup compiler, and the <code>rich</code> library for terminal output.
+            </p>
+
+            <ul class="space-y-2 text-xs sm:text-sm text-muted-foreground list-disc pl-5">
+              <li>Path-based TUI Explorer with folder navigation, large-files view, and drive picker.</li>
+              <li>Safe cleanup defaults with Recycle-bin first deletion, blocked protected directories, and operation logging.</li>
+              <li>Smart developer purge sweeps for massive artifacts (node_modules, .venv, target, dist, .next).</li>
+              <li>Fuzzy leftover scanner: finds filesystem and registry residual keys after application uninstall.</li>
+              <li>Optimize system commands: reset DNS/Winsock, trigger Storage Sense, reset Windows Update safely.</li>
+            </ul>
+          </div>
+
+          <!-- Preview image (Desktop) -->
+          <div class="hidden md:flex items-start justify-center">
+            <img
+              src="assets/branding/wmole-banner.png"
+              alt="wmole banner"
+              class="w-80 rounded-xl shadow-2xl border transition-transform duration-300 ease-out hover:scale-105 cursor-pointer"
+            />
+          </div>
+        </div>
+
+        <!-- Mobile Preview image -->
+        <div class="flex md:hidden justify-center mt-4">
+          <img
+            src="assets/branding/wmole-banner.png"
+            alt="wmole banner"
+            class="w-full max-w-sm rounded-xl shadow-2xl border"
+          />
+        </div>
+      </div>
+
+      <!-- Feature Grid -->
+      <h3 class="text-lg font-bold text-foreground mb-4 mt-8 sm:mt-10">System Capabilities</h3>
+      <div class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="folder-search" class="w-4 h-4 text-primary"></i>
+            TUI Path Explorer
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Interactively explore your paths with standard drive pickers, quick navigation shortcuts, detailed sub-item analysis, and instant large-files listings.
+          </p>
+        </div>
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="shield-check" class="w-4 h-4 text-primary"></i>
+            Safety First Model
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Deletes route to the Recycle Bin (send2trash) by default. Blocks crucial folders (Windows, Program Files, drive roots) and supports custom lists.
+          </p>
+        </div>
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="terminal" class="w-4 h-4 text-primary"></i>
+            Developer Purge
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Cleans up stale developer workspace caches instantly. Safely identifies node_modules, .venv, target, build, dist, .next, and Nuxt folders.
+          </p>
+        </div>
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="trash-2" class="w-4 h-4 text-primary"></i>
+            Residual Leftovers
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Find leftover filesystem paths and Windows registry keys following app uninstallation, cleaning remnants that general uninstallers miss.
+          </p>
+        </div>
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="sliders" class="w-4 h-4 text-primary"></i>
+            Settings Optimize
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Restructure network settings, clean Windows Prefetch/Store, invoke built-in Storage Sense, and easily flush out DNS cache securely.
+          </p>
+        </div>
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="activity" class="w-4 h-4 text-primary"></i>
+            Live TUI Telemetry
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Provides instant system status including CPU/memory counters, uptime, network I/O, disk statistics, power state, and sensor readings.
+          </p>
+        </div>
+      </div>
+
+      <!-- CLI Usage Info -->
+      <div class="mt-6 sm:mt-8 rounded-lg border bg-card p-4 sm:p-5">
+        <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-foreground">Interactive TUI Shortcuts</h3>
+        <p class="text-xs sm:text-sm text-muted-foreground mb-3">
+          Control wmole natively with rapid keys while analyzing any path or sweep result:
+        </p>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs code-font text-muted-foreground bg-background/50 p-3 rounded border">
+          <div><b class="text-foreground">Up / Down</b> : Navigate</div>
+          <div><b class="text-foreground">Enter</b> : Open folder</div>
+          <div><b class="text-foreground">Space</b> : Pick items</div>
+          <div><b class="text-foreground">D</b> : Trash delete</div>
+          <div><b class="text-foreground">Shift + D</b> : Perm delete</div>
+          <div><b class="text-foreground">G</b> : Large files</div>
+          <div><b class="text-foreground">V</b> : Drive picker</div>
+          <div><b class="text-foreground">O</b> : Open in Explorer</div>
+        </div>
+      </div>
+
+      <!-- Warnings -->
+      <div class="mt-6 sm:mt-8 rounded-lg border bg-card p-4 sm:p-5">
+        <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-foreground flex items-center gap-1.5">
+          <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+          Warnings
+        </h3>
+        <ul class="text-xs sm:text-sm text-muted-foreground space-y-1 list-disc pl-5">
+          <li><strong>Permanent Deletes:</strong> Direct deletes (Shift+D) bypass the Recycle Bin and cannot be recovered.</li>
+          <li><strong>System Optimizations:</strong> Registry manipulations or service resets (e.g., Windows Update reset) require Administrator execution.</li>
+          <li><strong>Purge Command:</strong> Ensure you are inside developer workspace folders before running recursive purging.</li>
+        </ul>
+      </div>
+
+      <!-- SPA Navigation Links -->
+      <div class="mt-6 sm:mt-8 flex flex-wrap items-center justify-center gap-2 sm:gap-4">
+        <a href="#readme" onclick="switchTab('home')" class="inline-flex items-center gap-1 rounded-full border px-3 sm:px-4 py-1.5 text-xs sm:text-sm font-medium text-foreground hover:bg-muted transition-colors">
+          Overview
+        </a>
+        <button onclick="switchTab('changelog')" class="inline-flex items-center gap-1 rounded-full border px-3 sm:px-4 py-1.5 text-xs sm:text-sm font-medium text-foreground hover:bg-muted transition-colors">
+          Changelog
+        </button>
+        <button onclick="switchTab('about')" class="inline-flex items-center gap-1 rounded-full border px-3 sm:px-4 py-1.5 text-xs sm:text-sm font-medium text-foreground hover:bg-muted transition-colors">
+          About
+        </button>
+        <a href="https://github.com/palamut62/wmole/issues" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 rounded-full border px-3 sm:px-4 py-1.5 text-xs sm:text-sm font-medium text-foreground hover:bg-muted transition-colors">
+          Issues
+        </a>
+      </div>
+
+      <!-- Footer -->
+      <footer class="mt-6 sm:mt-8 border-t py-6 text-center text-xs text-muted-foreground leading-relaxed">
+        Built by{" "}
+        <a href="https://github.com/palamut62" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline font-semibold">
+          palamut62
+        </a>{" "}
+        •{" "}
+        <a href="https://github.com/palamut62/wmole/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline font-semibold">
+          MIT License
+        </a>{" "}
+        <br class="sm:hidden" />
+        • v0.1.0 • Python • PyInstaller • Inno Setup • Rich TUI
+      </footer>
+    </main>
+  </div>
+
+  <!-- ABOUT PAGE -->
+  <div id="tab-about" class="tab-content">
+    <main class="mx-auto max-w-4xl px-4 sm:px-6 py-6 sm:py-10">
+      <div class="rounded-xl border bg-card overflow-hidden">
+        <div class="flex items-center gap-3 sm:gap-4 border-b px-4 sm:px-6 py-4 sm:py-5 bg-muted/30">
+          <img
+            src="https://github.com/palamut62.png"
+            alt="palamut62"
+            class="w-16 h-16 rounded-full border-2 border-primary/20 shrink-0"
+          />
+          <div>
+            <h2 class="text-lg font-bold text-foreground">Umut</h2>
+            <p class="text-sm text-muted-foreground">Full-Stack Developer &amp; AI Tools Enthusiast</p>
+          </div>
+        </div>
+
+        <div class="px-4 sm:px-6 py-5 sm:py-6 space-y-6">
+          <div>
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">About Me</h3>
+            <p class="text-sm text-muted-foreground leading-relaxed">
+              Hi! I'm Umut — a developer passionate about building lightweight, high-performance tools that enhance local developer workspaces. wmole represents a robust Windows-first system utility to easily monitor hardware telemetry, purge project files, sweep uninstallation remains, and fine-tune critical Windows properties efficiently.
+            </p>
+          </div>
+
+          <div>
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-3">Get in Touch</h3>
+            <div class="flex flex-col gap-3">
+              <a href="mailto:umutcelik6230@gmail.com" class="flex items-center gap-3 rounded-lg border px-4 py-3 text-sm text-foreground hover:bg-muted transition-colors">
+                <i data-lucide="mail" class="text-muted-foreground w-5 h-5 shrink-0"></i>
+                <div>
+                  <div class="font-medium">Email</div>
+                  <div class="text-muted-foreground break-all">umutcelik6230@gmail.com</div>
+                </div>
+              </a>
+
+              <a href="https://github.com/palamut62" target="_blank" rel="noopener noreferrer" class="flex items-center gap-3 rounded-lg border px-4 py-3 text-sm text-foreground hover:bg-muted transition-colors">
+                <i data-lucide="github" class="text-muted-foreground w-5 h-5 shrink-0"></i>
+                <div>
+                  <div class="font-medium">GitHub</div>
+                  <div class="text-muted-foreground">github.com/palamut62</div>
+                </div>
+              </a>
+
+              <a href="https://x.com/palamut62" target="_blank" rel="noopener noreferrer" class="flex items-center gap-3 rounded-lg border px-4 py-3 text-sm text-foreground hover:bg-muted transition-colors">
+                <i data-lucide="twitter" class="text-muted-foreground w-5 h-5 shrink-0"></i>
+                <div>
+                  <div class="font-medium">X (Twitter)</div>
+                  <div class="text-muted-foreground">x.com/palamut62</div>
+                </div>
+              </a>
+            </div>
+          </div>
+
+          <div>
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">About This Project</h3>
+            <p class="text-sm text-muted-foreground leading-relaxed font-normal">
+              wmole is a clean, minimal Windows command-line utility compiled into a high-performance installer. It helps developers keep workspace files clean of node_modules, temp archives, setup caches, and registry leftovers securely.
+            </p>
+            <div class="flex items-center gap-2 mt-4 text-xs text-muted-foreground">
+              <img src="assets/icons/desktop/hicolor/512x512/apps/wmole.png" alt="" class="w-5 h-5 rounded" />
+              <span>MIT License • Pure Python TUI &amp; Compiled Win32 Executable</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Back -->
+      <div class="mt-8 flex items-center justify-center">
+        <button onclick="switchTab('home')" class="inline-flex items-center gap-2 rounded-full border px-5 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+          <i data-lucide="arrow-left" class="w-4 h-4"></i>
+          Back to Home
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <!-- CHANGELOG PAGE -->
+  <div id="tab-changelog" class="tab-content">
+    <main class="mx-auto max-w-4xl px-4 sm:px-6 py-6 sm:py-10">
+      <div class="space-y-8">
+        
+        <!-- Release 0.1.0 -->
+        <article class="rounded-xl border bg-card overflow-hidden">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b px-4 sm:px-6 py-4 bg-muted/30">
+            <div class="flex items-center gap-3">
+              <img src="assets/icons/desktop/hicolor/512x512/apps/wmole.png" alt="" class="w-8 h-8 rounded-lg shrink-0" />
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <i data-lucide="tag" class="w-3.5 h-3.5 text-muted-foreground"></i>
+                  <span class="font-semibold text-foreground">v0.1.0</span>
+                  <span class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
+                    Latest Release
+                  </span>
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
+                  <i data-lucide="calendar" class="w-3 h-3"></i>
+                  May 24, 2026
+                </div>
+              </div>
+            </div>
+            <a
+              href="https://github.com/palamut62/wmole/releases/download/v0.1.0/wmole-0.1.0-setup.exe"
+              class="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity self-start sm:self-auto"
+            >
+              <i data-lucide="download" class="w-3.5 h-3.5"></i>
+              Download Setup v0.1.0
+            </a>
+          </div>
+
+          <div class="px-4 sm:px-6 py-4 sm:py-5 space-y-4 sm:space-y-5">
+            <h2 class="text-lg font-semibold text-foreground">Initial Public Release</h2>
+            
+            <div>
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-1.5">Highlights</h3>
+              <ul class="space-y-1 text-sm text-muted-foreground">
+                <li class="flex items-start gap-2">
+                  <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
+                  Compiled Windows standalone executable with customized installer package.
+                </li>
+                <li class="flex items-start gap-2">
+                  <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
+                  Safe deletion logic routing to recycle bin by default to prevent accidental data loss.
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Features</h3>
+              <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                <li><strong>Interactive TUI Path Explorer:</strong> Built-in keyboard shortcuts, quick dir navigations, dynamic drive selection.</li>
+                <li><strong>Developer Workspace Purge:</strong> Fast recursive removal of target build products (node_modules, build directories, Python venv caches).</li>
+                <li><strong>System Settings Optimizer:</strong> DNS flush, Storage Sense trigger, Windows Update services manager resets.</li>
+                <li><strong>Fuzzy Residual Search:</strong> Identifies program remnants across appdata directories and Windows registry.</li>
+                <li><strong>Status Dashboard:</strong> Live uptime tracker, CPU/RAM stats, active network counters, and hardware thermal sensors.</li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Technical Specs</h3>
+              <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                <li>Compatible with Windows 10/11 64-bit platforms.</li>
+                <li>Python 3.9+ runtime dependencies bundle via PyInstaller executable wrapper.</li>
+                <li>Secure local logging sweeps at <code>~/.wmole/logs/operations.log</code>.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </div>
+
+      <!-- Back -->
+      <div class="mt-8 flex items-center justify-center">
+        <button onclick="switchTab('home')" class="inline-flex items-center gap-2 rounded-full border px-5 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+          <i data-lucide="arrow-left" class="w-4 h-4"></i>
+          Back to Home
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Initialize Lucide Icons
+    lucide.createIcons();
+
+    // Smooth SPA Tab Switching
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => {
+        el.classList.remove('active');
+      });
+      const activeEl = document.getElementById('tab-' + tabId);
+      if (activeEl) {
+        activeEl.classList.add('active');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+
+    // Theme Toggle Handler
+    function toggleTheme() {
+      const html = document.documentElement;
+      if (html.classList.contains('dark')) {
+        html.classList.remove('dark');
+        localStorage.setItem('theme', 'light');
+      } else {
+        html.classList.add('dark');
+        localStorage.setItem('theme', 'dark');
+      }
+    }
+
+    // Set initial theme
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme === 'light') {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
+
+    // Copy to clipboard helper
+    function copyCommand(btn, text) {
+      navigator.clipboard.writeText(text).then(() => {
+        const icon = btn.querySelector('i');
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = `<i data-lucide="check" class="w-3.5 h-3.5 text-green-500"></i>`;
+        lucide.createIcons();
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+          lucide.createIcons();
+        }, 1500);
+      });
+    }
+
+    // Support back/forward browser navigation
+    window.addEventListener('hashchange', () => {
+      const hash = window.location.hash.substring(1);
+      if (['home', 'about', 'changelog'].includes(hash)) {
+        switchTab(hash);
+      }
+    });
+
+    // Handle initial hash routing
+    const initialHash = window.location.hash.substring(1);
+    if (['home', 'about', 'changelog'].includes(initialHash)) {
+      switchTab(initialHash);
+    }
+  </script>
+</body>
+</html>

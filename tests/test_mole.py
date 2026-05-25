@@ -170,7 +170,7 @@ class WmoleBehaviorTests(unittest.TestCase):
 
         self.assertEqual(filtered, [apps[1]])
 
-    def test_palette_contains_only_operation_access_commands(self):
+    def test_palette_exposes_operations_and_existing_context_actions(self):
         with mock.patch.object(mole, "LANG", "en"):
             names = [cmd["name"] for cmd in mole.palette_commands()]
 
@@ -179,6 +179,7 @@ class WmoleBehaviorTests(unittest.TestCase):
             [
                 "analyze",
                 "categories",
+                "clean",
                 "purge",
                 "installers",
                 "uninstall",
@@ -187,10 +188,32 @@ class WmoleBehaviorTests(unittest.TestCase):
                 "ports",
                 "update",
                 "help",
+                "large",
+                "drives",
+                "select",
+                "delete",
+                "permanent",
+                "open",
+                "refresh",
+                "leftovers",
+                "lang",
+                "back",
+                "quit",
             ],
         )
-        self.assertEqual(mole.filter_palette("/permanent"), [])
-        self.assertEqual(mole.filter_palette("/quit"), [])
+        self.assertEqual(mole.filter_palette("/permanent")[0]["action"], "key:k")
+        self.assertEqual(mole.filter_palette("/quit")[0]["action"], "exec:quit")
+
+    def test_palette_can_render_selection_beyond_first_page(self):
+        output = io.StringIO()
+        test_console = Console(record=True, width=120, color_system=None, file=output)
+        with mock.patch.object(mole, "LANG", "en"):
+            last_index = len(mole.palette_commands()) - 1
+            test_console.print(mole.render_palette("", last_index))
+
+        rendered = test_console.export_text()
+        self.assertIn("/quit", rendered)
+        self.assertNotIn("/analyze", rendered)
 
     def test_command_input_is_visible_when_palette_is_idle(self):
         output = io.StringIO()
@@ -260,6 +283,27 @@ class WmoleBehaviorTests(unittest.TestCase):
         self.assertIsNotNone(last_command_row)
         self.assertLess(first_command_row, test_console.height)
         self.assertLess(last_command_row, test_console.height)
+        self.assertLessEqual(len(lines), test_console.height)
+
+    def test_quiet_update_check_returns_visible_up_to_date_status(self):
+        release = {"tag_name": f"v{mole.__version__}", "assets": []}
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(mole.sys, "frozen", True, create=True),
+            mock.patch.object(mole, "fetch_latest_release", return_value=release),
+            contextlib.redirect_stdout(stdout),
+        ):
+            status = mole.cli_update(json_out=False, quiet=True)
+
+        self.assertEqual(status, "already up to date")
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_turkish_tui_update_status_explicitly_reports_current_version(self):
+        with mock.patch.object(mole, "LANG", "tr"):
+            self.assertEqual(
+                mole.format_tui_update_status("already up to date"),
+                "Sürüm güncel.",
+            )
 
     def test_disabling_auto_update_does_not_start_background_check(self):
         with tempfile.TemporaryDirectory() as td:

@@ -191,7 +191,9 @@ Leftover candidates are shown automatically after uninstall launch and can also 
 ```text
 Type / in the visible input line, filter with text, choose with Up/Down, and run with Enter.
 Operations: /analyze | /categories | /purge | /installers | /uninstall
-            /optimize | /status | /ports | /update | /help
+            /clean | /optimize | /status | /ports | /update | /help
+Actions:    /large | /drives | /select | /delete | /permanent | /open
+            /refresh | /leftovers | /lang | /back | /quit
 Context keys: Up/Down move | Enter open/run | Space pick | D delete | K permanent mode
               R refresh | O open in Explorer | L scan uninstall leftovers
               G large files | V drives | Esc/Q back

@@ -1478,14 +1478,21 @@ def _help_sections_tr() -> List[tuple]:
         ("Komut girdisi ile işlemler", [
             "/analyze          Dosya sistemini gez, klasör boyutlarını gör",
             "/categories       Kategorilere göre toplu disk haritası",
+            "/clean            Güvenli temizlik kategorilerini incele",
             "/purge            node_modules, build, venv vb. dev klasörleri",
             "/installers       İndirilenlerdeki eski .exe/.msi setupları",
             "/uninstall        Kurulu programlar + artık temizliği",
             "/optimize         DNS flush, Windows Update reset, Storage Sense",
             "/status           Canlı CPU/RAM/Disk/Ağ/Sıcaklık dashboard",
             "/ports            Dinleyen geliştirici portlarının özetini göster",
-            "/update           Güncelleme kontrolünü başlat",
+            "/update           Güncel sürüm durumunu göster",
             "/help             Bu yardım ekranını aç",
+            "/large /drives    Büyük dosyalar / sürücü seçici",
+            "/select /delete   Seçimi değiştir / seçilenleri onayla sil",
+            "/permanent        Kalıcı silme modunu aç/kapa",
+            "/open /refresh    Explorer'da aç / taramayı yenile",
+            "/leftovers        Seçili uygulamanın artıklarını tara",
+            "/lang /back /quit Dil değiştir / geri dön / çık",
         ]),
         ("Liste navigasyonu", [
             "↑/↓             imleci taşı",
@@ -1551,14 +1558,21 @@ def _help_sections_en() -> List[tuple]:
         ("Operations via command input", [
             "/analyze          Browse the filesystem with live folder sizes",
             "/categories       Category breakdown of disk usage",
+            "/clean            Review safe cleanup categories",
             "/purge            node_modules, build, venv & friends",
             "/installers       Old .exe/.msi setups in Downloads",
             "/uninstall        Installed programs + leftover sweep",
             "/optimize         DNS flush, Windows Update reset, Storage Sense",
             "/status           Live CPU/RAM/Disk/Net/Temperature dashboard",
             "/ports            Show listening developer ports",
-            "/update           Start an update check",
+            "/update           Show current update status",
             "/help             Open this help screen",
+            "/large /drives    Large files / drive picker",
+            "/select /delete   Toggle selection / confirm selected delete",
+            "/permanent        Toggle permanent-delete mode",
+            "/open /refresh    Open in Explorer / refresh current scan",
+            "/leftovers        Scan leftovers for selected program",
+            "/lang /back /quit Switch language / return / exit",
         ]),
         ("List navigation", [
             "↑/↓             move cursor",
@@ -1621,14 +1635,26 @@ def palette_commands() -> List[dict]:
     return [
         {"name": "analyze",   "desc": d("Browse the filesystem with live sizes", "Dosya sistemini canlı boyutlarla gez"),     "action": "view:analyze-fs"},
         {"name": "categories","desc": d("Disk usage by category",                "Kategoriye göre disk dağılımı"),             "action": "view:cats"},
+        {"name": "clean",     "desc": d("Review safe cleanup categories",        "Güvenli temizlik kategorilerini incele"),    "action": "view:clean"},
         {"name": "purge",     "desc": d("Bulk-delete node_modules/build/dist",   "node_modules/build/dist toplu sil"),         "action": "view:purge"},
         {"name": "installers","desc": d("Find old setups in Downloads/Desktop",  "İndirilenlerdeki eski setupları bul"),       "action": "view:installers"},
         {"name": "uninstall", "desc": d("Installed programs + leftover sweep",   "Kurulu programlar + artık temizliği"),       "action": "view:uninstall"},
         {"name": "optimize",  "desc": d("DNS flush, Windows Update reset, …",    "DNS flush, Windows Update reset, …"),        "action": "view:optimize"},
         {"name": "status",    "desc": d("Live CPU/RAM/Disk/Net dashboard",       "Canlı CPU/RAM/Disk/Ağ dashboard"),           "action": "view:status"},
         {"name": "ports",     "desc": d("List listening dev ports (run CLI to kill)", "Dinleyen dev portları (öldürme CLI'da)"), "action": "exec:ports"},
-        {"name": "update",    "desc": d("Check GitHub and self-update",          "GitHub kontrolü + kendini güncelle"),        "action": "exec:update"},
+        {"name": "update",    "desc": d("Check GitHub update status",            "GitHub güncelleme durumunu kontrol et"),     "action": "exec:update"},
         {"name": "help",      "desc": d("Open the help & features screen",      "Yardım & özellikler ekranını aç"),           "action": "view:help"},
+        {"name": "large",     "desc": d("List large files in this folder",       "Bu klasördeki büyük dosyaları listele"),     "action": "key:g"},
+        {"name": "drives",    "desc": d("Open the drive picker",                 "Sürücü seçiciyi aç"),                        "action": "key:v"},
+        {"name": "select",    "desc": d("Toggle current item selection",         "Geçerli öğe seçimini değiştir"),             "action": "key:SPACE"},
+        {"name": "delete",    "desc": d("Delete selected items with confirmation", "Seçilenleri onayla sil"),                   "action": "key:d"},
+        {"name": "permanent", "desc": d("Toggle permanent-delete mode",          "Kalıcı silme modunu değiştir"),              "action": "key:k"},
+        {"name": "open",      "desc": d("Open current item in Explorer",         "Geçerli öğeyi Explorer'da aç"),              "action": "key:o"},
+        {"name": "refresh",   "desc": d("Refresh the current scan",              "Geçerli taramayı yenile"),                   "action": "key:r"},
+        {"name": "leftovers", "desc": d("Scan leftovers for selected program",   "Seçili programın artıklarını tara"),         "action": "key:l"},
+        {"name": "lang",      "desc": d("Switch Turkish / English",              "Türkçe / İngilizce değiştir"),               "action": "key:\\"},
+        {"name": "back",      "desc": d("Return to the previous surface",        "Önceki ekrana dön"),                         "action": "key:ESC"},
+        {"name": "quit",      "desc": d("Exit wmole",                            "wmole'dan çık"),                             "action": "exec:quit"},
     ]
 
 
@@ -1645,8 +1671,11 @@ def render_palette(query: str, cursor: int) -> Panel:
     if not rows:
         body = Text("  (no matching command)\n", style="grey50")
     else:
+        page_start = max(0, min(cursor - 11, len(rows) - 12))
+        visible_rows = rows[page_start:page_start + 12]
         body = Text()
-        for i, c in enumerate(rows[:12]):
+        for offset, c in enumerate(visible_rows):
+            i = page_start + offset
             marker = "▶ " if i == cursor else "  "
             style = "bright_cyan" if i == cursor else "white"
             body.append(f"  {marker}/{c['name']:<12}", style=style)
@@ -1673,7 +1702,20 @@ def render_command_input() -> Panel:
 
 def palette_extra_height(query: str) -> int:
     """Rows consumed beyond the idle command input when results are open."""
-    return min(len(filter_palette(query)), 12) + 4
+    return min(len(filter_palette(query)), 12) + 5
+
+
+def format_tui_update_status(status: str) -> str:
+    if LANG != "tr":
+        return status
+    if status == "already up to date":
+        return "Sürüm güncel."
+    if status.startswith("update available: "):
+        latest = status.split(";", 1)[0].removeprefix("update available: ")
+        return f"Güncelleme mevcut: {latest}. Otomatik kurulum için wmole'u yeniden başlatın."
+    if status == "could not reach GitHub API":
+        return "GitHub güncelleme kontrolüne ulaşılamadı."
+    return status
 
 
 def render_help(scroll: int = 0) -> Group:
@@ -2055,33 +2097,43 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
             shifted = key.isalpha() and key.isupper()  # msvcrt returns upper when shift held
 
             # ---- Slash command palette intercept ----
+            forward_palette_key = False
             if palette_open:
                 rows_p = filter_palette(palette_query)
                 if key == "ESC":
                     palette_open = False; palette_query = ""; palette_cursor = 0
                 elif key == "UP":
-                    if rows_p: palette_cursor = (palette_cursor - 1) % min(len(rows_p), 12)
+                    if rows_p: palette_cursor = (palette_cursor - 1) % len(rows_p)
                 elif key == "DOWN":
-                    if rows_p: palette_cursor = (palette_cursor + 1) % min(len(rows_p), 12)
+                    if rows_p: palette_cursor = (palette_cursor + 1) % len(rows_p)
                 elif key == "ENTER":
                     if rows_p:
                         cmd = rows_p[palette_cursor]
                         palette_open = False; palette_query = ""; palette_cursor = 0
                         action = cmd["action"]
                         if action == "view:analyze-fs":
+                            profile = "idle"
                             scanner = Scanner(whitelist=whitelist, profile="idle")
                             threading.Thread(target=scanner.run, daemon=True).start()
                             view_stack = [View(title=f"Analyze · {analyze_start}", kind="items",
                                                category=build_fs_category(analyze_start))]; cursor = 0
                         elif action == "view:cats":
+                            profile = "full"
                             scanner = Scanner(whitelist=whitelist, profile="full")
                             threading.Thread(target=scanner.run, daemon=True).start()
                             view_stack = [View(title="Analyze Categories", kind="cats")]; cursor = 0
+                        elif action == "view:clean":
+                            profile = "clean"
+                            scanner = Scanner(whitelist=whitelist, profile="clean")
+                            threading.Thread(target=scanner.run, daemon=True).start()
+                            view_stack = [View(title="Safe Cleanup", kind="cats")]; cursor = 0
                         elif action == "view:purge":
+                            profile = "purge"
                             scanner = Scanner(whitelist=whitelist, profile="purge")
                             threading.Thread(target=scanner.run, daemon=True).start()
                             view_stack = [View(title="Purge Artifacts", kind="cats")]; cursor = 0
                         elif action == "view:installers":
+                            profile = "installers"
                             scanner = Scanner(whitelist=whitelist, profile="installers")
                             threading.Thread(target=scanner.run, daemon=True).start()
                             view_stack = [View(title="Installers", kind="cats")]; cursor = 0
@@ -2102,11 +2154,17 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                             except Exception as e:
                                 msg = f"ports query failed: {e}"
                         elif action == "exec:update":
-                            msg = "running update check — see terminal output"
                             try:
-                                cli_update(json_out=False, yes=False, dry_run=False)
+                                msg = format_tui_update_status(
+                                    cli_update(json_out=False, yes=False, dry_run=False, quiet=True)
+                                )
                             except Exception as e:
                                 msg = f"update failed: {e}"
+                        elif action == "exec:quit":
+                            return
+                        elif action.startswith("key:"):
+                            key = action[4:]
+                            forward_palette_key = True
                 elif key == "BACKSPACE" or key == "\x08":
                     palette_query = palette_query[:-1]
                     palette_cursor = 0
@@ -2116,7 +2174,10 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                 elif len(key) == 1 and key.isprintable() and key != "/":
                     palette_query += key
                     palette_cursor = 0
-                continue
+                if not forward_palette_key:
+                    continue
+                up = key.upper() if len(key) == 1 else key
+                shifted = key.isalpha() and key.isupper()
 
             # Open the palette from anywhere with "/"
             if key == "/":
@@ -2566,12 +2627,15 @@ def _download(url: str, dest: Path, on_progress=None) -> None:
                 on_progress(read, total)
 
 
-def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None:
+def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
+               quiet: bool = False) -> str:
     """Self-update.
 
     - Frozen exe (PyInstaller install): check GitHub latest release, download
       installer, run /VERYSILENT to upgrade in place.
     - Source checkout: git pull + pip upgrade deps (legacy behavior).
+    - quiet=True is used by the TUI to check status without writing behind its
+      alternate screen or opening an invisible installation prompt.
     """
     is_frozen = bool(getattr(sys, "frozen", False))
     steps: List[dict] = []
@@ -2581,8 +2645,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
         if not rel:
             steps.append({"step": "fetch-release", "code": 1,
                           "output": "could not reach GitHub API"})
-            _emit_update(steps, json_out)
-            return
+            return _emit_update(steps, json_out, quiet)
         latest_tag = rel.get("tag_name", "")
         latest_ver = _parse_semver(latest_tag)
         current_ver = _parse_semver(__version__)
@@ -2591,15 +2654,18 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
         if latest_ver <= current_ver:
             steps.append({"step": "decision", "code": 0,
                           "output": "already up to date"})
-            _emit_update(steps, json_out)
-            return
+            return _emit_update(steps, json_out, quiet)
+
+        if quiet:
+            steps.append({"step": "decision", "code": 0,
+                          "output": f"update available: {latest_tag}; restart wmole to install automatically"})
+            return _emit_update(steps, json_out, quiet)
 
         asset = _pick_installer_asset(rel.get("assets", []))
         if not asset:
             steps.append({"step": "asset", "code": 1,
                           "output": "no installer asset found in release"})
-            _emit_update(steps, json_out)
-            return
+            return _emit_update(steps, json_out, quiet)
         url = asset["browser_download_url"]
         name = asset["name"]
         steps.append({"step": "asset", "code": 0, "output": name})
@@ -2609,8 +2675,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
                           "output": f"would download {url}"})
             steps.append({"step": "install", "code": 0,
                           "output": "would run /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"})
-            _emit_update(steps, json_out)
-            return
+            return _emit_update(steps, json_out, quiet)
 
         if not yes and not json_out:
             try:
@@ -2619,8 +2684,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
                 ans = ""
             if ans not in ("y", "yes"):
                 steps.append({"step": "decision", "code": 1, "output": "user declined"})
-                _emit_update(steps, json_out)
-                return
+                return _emit_update(steps, json_out, quiet)
 
         dest = TEMP / name
         try:
@@ -2638,8 +2702,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
                           "output": f"{dest} ({dest.stat().st_size} bytes)"})
         except Exception as exc:
             steps.append({"step": "download", "code": 1, "output": str(exc)})
-            _emit_update(steps, json_out)
-            return
+            return _emit_update(steps, json_out, quiet)
 
         # Launch installer detached so it can replace our own exe after we exit.
         try:
@@ -2653,13 +2716,12 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
                           "output": "installer launched in background; exiting"})
             log_operation("self_update", dest, dest.stat().st_size,
                           f"{__version__} -> {latest_tag}")
-            _emit_update(steps, json_out)
+            _emit_update(steps, json_out, quiet)
             # Exit so the installer can overwrite the running exe.
             os._exit(0)
         except Exception as exc:
             steps.append({"step": "install", "code": 1, "output": str(exc)})
-            _emit_update(steps, json_out)
-            return
+            return _emit_update(steps, json_out, quiet)
 
     # Source checkout path (legacy)
     if path_exists(Path(".git")):
@@ -2669,7 +2731,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
         steps.append({"step": "git-pull", "code": 1, "output": "not a git repository"})
     r2 = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "rich", "send2trash", "psutil"], capture_output=True, text=True, shell=False)
     steps.append({"step": "pip-upgrade-deps", "code": r2.returncode, "output": (r2.stdout or r2.stderr).strip()[-500:]})
-    _emit_update(steps, json_out)
+    return _emit_update(steps, json_out, quiet)
 
 
 # ---------- Background auto-update (Claude Code style) ----------
@@ -2818,12 +2880,14 @@ def apply_pending_update() -> bool:
         return False
 
 
-def _emit_update(steps: List[dict], json_out: bool) -> None:
-    if json_out:
-        print(json.dumps({"steps": steps}, indent=2))
-    else:
-        for s in steps:
-            print(f"{s['step']}: exit {s['code']}  {s['output']}")
+def _emit_update(steps: List[dict], json_out: bool, quiet: bool = False) -> str:
+    if not quiet:
+        if json_out:
+            print(json.dumps({"steps": steps}, indent=2))
+        else:
+            for s in steps:
+                print(f"{s['step']}: exit {s['code']}  {s['output']}")
+    return steps[-1]["output"] if steps else ""
 
 
 def cli_remove(dry_run: bool, json_out: bool) -> None:

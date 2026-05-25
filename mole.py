@@ -89,7 +89,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -401,17 +401,24 @@ def _onerr_chmod(func, path, exc):
         pass
 
 
-def delete_path(path: Path, use_trash: bool, dry_run: bool) -> Optional[str]:
-    """Returns None on success, error string otherwise."""
+def delete_path(path: Path, use_trash: bool, dry_run: bool, known_size: int = 0) -> Optional[str]:
+    """Returns None on success, error string otherwise.
+
+    known_size: pre-computed size from the scanner (avoids redundant dir_size walk).
+    """
     if is_protected_path(path):
         msg = "protected path"
         log_operation("delete-blocked", path, result=msg)
         return msg
-    size = 0
-    try:
-        size = path.stat().st_size if path.is_file() else dir_size(path)
-    except OSError:
-        pass
+    # Use provided known_size when available to avoid slow re-computation
+    if known_size > 0:
+        size = known_size
+    else:
+        size = 0
+        try:
+            size = path.stat().st_size if path.is_file() else quick_size(path)
+        except OSError:
+            pass
     if dry_run:
         log_operation("delete-dry-run", path, size=size, result="ok")
         return None
@@ -700,7 +707,7 @@ def _file_count_and_size(path: Path) -> tuple[int, int]:
     return count, total
 
 
-def find_large_files(path: Path, minimum_size: int) -> List[dict]:
+def find_large_files(path: Path, minimum_size: int, on_progress=None) -> List[dict]:
     large: List[dict] = []
     if path.is_file():
         try:
@@ -710,6 +717,8 @@ def find_large_files(path: Path, minimum_size: int) -> List[dict]:
         if size >= minimum_size:
             large.append({"name": path.name, "path": str(path), "size": size})
         return large
+    scanned = 0
+    last_emit = time.time()
     for root, _dirs, files in os.walk(path, onerror=lambda e: None):
         for name in files:
             p = Path(root) / name
@@ -717,8 +726,18 @@ def find_large_files(path: Path, minimum_size: int) -> List[dict]:
                 size = p.stat().st_size
             except OSError:
                 continue
+            scanned += 1
             if size >= minimum_size:
                 large.append({"name": p.name, "path": str(p), "size": size})
+            # Emit progress every 0.15s for live feedback
+            if on_progress and time.time() - last_emit > 0.15:
+                on_progress(scanned, len(large))
+                last_emit = time.time()
+        if on_progress and time.time() - last_emit > 0.3:
+            on_progress(scanned, len(large))
+            last_emit = time.time()
+    if on_progress:
+        on_progress(scanned, len(large))
     large.sort(key=lambda row: row["size"], reverse=True)
     return large
 
@@ -765,7 +784,8 @@ def quick_size(path: Path) -> int:
     return dir_size(path, max_seconds=0.2, max_files=2500)
 
 
-def build_fs_category(path: Path) -> Category:
+def build_fs_category(path: Path, live=None, scanner=None, view=None, cursor=0,
+                       use_trash=True, dry_run=False, apps=None, opt=None) -> Category:
     path = path.expanduser()
     title = str(path)
     cat = Category(
@@ -774,7 +794,7 @@ def build_fs_category(path: Path) -> Category:
         description="filesystem explorer",
         icon="📁",
         safe_default=False,
-        scanning=False,
+        scanning=True,
     )
     if path.parent != path:
         up = Item(path=path.parent, size=0, selected=False)
@@ -785,13 +805,25 @@ def build_fs_category(path: Path) -> Category:
             children = list(path.iterdir())
         except OSError:
             children = []
-        rows = []
-        for child in children:
+        rows: List[Item] = []
+        total_children = len(children)
+        for idx, child in enumerate(children):
             if is_protected_path(child):
                 continue
             rows.append(Item(path=child, size=quick_size(child), selected=False))
+            # Show progress for large directories
+            if live is not None and total_children > 50 and idx % 10 == 0:
+                filled = int(20 * idx / total_children) if total_children > 0 else 20
+                progress_text = Text()
+                progress_text.append("[" + "█" * filled + "·" * (20 - filled) + "]", style="bright_cyan")
+                progress_text.append(f"  Reading {idx + 1}/{total_children} items…", style="white")
+                live.update(Group(
+                    render(scanner, view, cursor, "", use_trash, dry_run, apps or [], opt or []),
+                    Panel(progress_text, title="Opening directory…", border_style="cyan", padding=(1, 2)),
+                ))
         rows.sort(key=lambda it: (not it.path.is_dir(), -it.size, it.path.name.lower()))
         cat.items.extend(rows)
+    cat.scanning = False
     return cat
 
 
@@ -2266,12 +2298,22 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
             body.append("\n")
         body.append(("      " + T("footer_less", n=len(rows) - end) + "\n" if end < len(rows) else "\n"), style="grey42")
 
-    # Status / message lines (fixed 2)
+    # Status / message lines (fixed 2) with animation-style message display
     status = Text()
     line1 = ("  " + scanner.status) if (scanner.status and not scanner.done and view.kind in ("cats", "items")) else ""
     line2 = ("  " + msg) if msg else ""
     status.append((line1 or " ") + "\n", style="grey50")
-    status.append((line2 or " ") + "\n", style="yellow")
+    # Enhanced message display with icon prefix detection for styled output
+    if msg:
+        msg_prefix = msg[:3] if len(msg) >= 3 else ""
+        msg_style = "bold bright_green" if ("✓" in msg or "✅" in msg or "ok" in msg.lower()[:10] or "Done" in msg[:10] or "Deleted" in msg[:10] or "Cleaned" in msg[:10] or "Removed" in msg[:10]) else \
+                    "bold bright_red" if ("✗" in msg or "❌" in msg or "fail" in msg.lower()[:10] or "Error" in msg[:10]) else \
+                    "bold bright_yellow" if ("⚠" in msg or "⚠️" in msg or "Warning" in msg[:10] or "warn" in msg.lower()[:10]) else \
+                    "bold cyan" if ("cancelled" in msg.lower() or "aborted" in msg.lower()) else \
+                    "bold yellow"
+        status.append("  " + line2 + "\n", style=msg_style)
+    else:
+        status.append((line2 or " ") + "\n", style="yellow")
 
     footer = Text("\n".join(footer_lines), style="bold grey70")
     if palette is not None:
@@ -2351,11 +2393,54 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
     if key != "ENTER":
         return T("cancelled")
 
+    total_count = len(targets)
     ok = err = 0
-    for it in targets:
-        live.update(Group(render(scanner, view, cursor, "", use_trash, dry_run, apps, opt),
-                          Text(f"  · {it.path}", style="yellow")))
-        e = delete_path(it.path, use_trash=use_trash, dry_run=dry_run)
+    start_time = time.time()
+
+    for idx, it in enumerate(targets):
+        # ── Animated progress during deletion ──
+        pct_done = (idx / total_count) * 100 if total_count > 0 else 100
+        bar_w = 30
+        filled = int(bar_w * idx / total_count) if total_count > 0 else bar_w
+        progress_bar = Text()
+        progress_bar.append("[" + "█" * filled + "·" * (bar_w - filled) + "]", style="bright_cyan")
+        progress_bar.append(f" {idx}/{total_count}", style="white")
+        progress_bar.append(f"  {pct_done:5.1f}%", style="bright_cyan")
+
+        # Show elapsed time
+        elapsed = time.time() - start_time
+        elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{elapsed/60:.1f}m"
+
+        # Current item display with spinner-like effect based on idx
+        spin_frames = ["◜", "◝", "◞", "◟"]
+        spin = spin_frames[idx % 4]
+        disp = str(it.path)
+        if len(disp) > 65:
+            disp = "…" + disp[-64:]
+        current_item = Text()
+        current_item.append(f"\n  {spin} Deleting: ", style="yellow")
+        current_item.append(disp, style="bold white")
+        current_item.append(f"  ({human_size(it.size)})", style="grey62")
+
+        # Stats line
+        stats_line = Text()
+        stats_line.append(f"\n  ✓ {ok} done", style="bright_green")
+        if err > 0:
+            stats_line.append(f"  ✗ {err} errors", style="red")
+        stats_line.append(f"  ⏱ {elapsed_str}", style="grey62")
+
+        live.update(Group(
+            render(scanner, view, cursor, "", use_trash, dry_run, apps, opt),
+            Panel(
+                Group(progress_bar, current_item, stats_line),
+                title=T("confirm_title"),
+                title_align="center",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        ))
+
+        e = delete_path(it.path, use_trash=use_trash, dry_run=dry_run, known_size=it.size)
         if e is None:
             if not dry_run:
                 it.deleted = True
@@ -2364,6 +2449,46 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
         else:
             it.error = e
             err += 1
+
+    elapsed_total = time.time() - start_time
+    elapsed_total_str = f"{elapsed_total:.1f}s" if elapsed_total < 60 else f"{elapsed_total/60:.1f}m"
+
+    # ── Completion animation ──
+    for frame in range(8):
+        bar_w = 30
+        all_filled = bar_w
+        comp_bar = Text()
+        comp_bar.append("[" + "█" * all_filled + "]", style="bright_green")
+        comp_bar.append(f" {total_count}/{total_count}", style="white")
+        comp_bar.append("  100.0%", style="bright_green")
+
+        result_icon = "✅" if err == 0 else "⚠️"
+        result_line = Text()
+        result_line.append(f"\n  {result_icon} ", style="bright_green" if err == 0 else "bright_yellow")
+        if dry_run:
+            result_line.append(T("done_dry", n=ok, size=human_size(total)), style="bold white")
+        elif use_trash:
+            result_line.append(T("done_ok", n=ok, size=human_size(total)), style="bold white")
+        else:
+            result_line.append(T("done_perm", n=ok, size=human_size(total)), style="bold white")
+        if err:
+            result_line.append("  " + T("done_errs", n=err), style="red")
+        result_line.append(f"  ⏱ {elapsed_total_str}", style="grey62")
+
+        # Pulsing effect on completion
+        border_styles = ["bright_green", "green", "bright_green", "green", "bright_green", "green", "cyan", "bright_green"]
+        live.update(Group(
+            render(scanner, view, cursor, "", use_trash, dry_run, apps, opt),
+            Panel(
+                Group(comp_bar, result_line),
+                title=T("confirm_title") + " — " + ("✓" if err == 0 else "!"),
+                title_align="center",
+                border_style=border_styles[frame % len(border_styles)],
+                padding=(1, 2),
+            )
+        ))
+        time.sleep(0.06)
+
     if dry_run:
         msg = T("done_dry", n=ok, size=human_size(total))
     elif use_trash:
@@ -2427,6 +2552,11 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
         except Exception:
             pass
 
+    # ── View transition animation state ──
+    prev_view_id = None
+    transition_frame = 0
+    TRANSITION_FRAMES = 4  # frames to spend on transition animation
+
     with Live(console=console, refresh_per_second=8, screen=True, vertical_overflow="crop") as live:
         while True:
             view = view_stack[-1]
@@ -2440,6 +2570,31 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                 rows = []
             if rows:
                 cursor = max(0, min(cursor, len(rows) - 1))
+
+            # Detect view transitions
+            current_view_id = (view.kind, view.title)
+            if prev_view_id is not None and current_view_id != prev_view_id:
+                transition_frame = TRANSITION_FRAMES
+            prev_view_id = current_view_id
+
+            # Render with transition effect when transitioning
+            if transition_frame > 0:
+                # Build transition overlay
+                tf = TRANSITION_FRAMES - transition_frame + 1
+                tbar_w = 40
+                tfilled = int(tbar_w * tf / TRANSITION_FRAMES)
+                trans_text = Text()
+                trans_text.append("\n\n\n")
+                trans_text.append(" " * ((console.size.width or 80) // 2 - tbar_w // 2 - 5))
+                trans_text.append("[" + "█" * tfilled + "·" * (tbar_w - tfilled) + "]", style="bright_cyan")
+                trans_text.append("\n")
+                trans_text.append(" " * ((console.size.width or 80) // 2 - len(view.title) // 2))
+                trans_text.append(view.title, style="bold white")
+                live.update(Panel(trans_text, border_style="cyan", padding=(3, 2)))
+                transition_frame -= 1
+                time.sleep(0.04)
+                continue
+
             live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
                                palette=(palette_query, palette_cursor) if palette_open else None))
 
@@ -2477,7 +2632,10 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                             scanner = Scanner(whitelist=whitelist, profile="idle")
                             threading.Thread(target=scanner.run, daemon=True).start()
                             view_stack = [View(title=f"Analyze · {analyze_start}", kind="items",
-                                               category=build_fs_category(analyze_start))]; cursor = 0
+                                               category=build_fs_category(analyze_start, live=live, scanner=scanner,
+                                                                          view=View(title="", kind="items"), cursor=0,
+                                                                          use_trash=use_trash, dry_run=dry_run,
+                                                                          apps=apps_cache, opt=opt_cache))]; cursor = 0
                         elif action == "view:cats":
                             profile = "full"
                             scanner = Scanner(whitelist=whitelist, profile="full")
@@ -2587,7 +2745,10 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                     if row.error == "up":
                         target = row.path
                     if path_exists(target) and target.is_dir():
-                        new_cat = build_fs_category(target)
+                        new_cat = build_fs_category(target, live=live, scanner=scanner,
+                                                    view=view, cursor=cursor,
+                                                    use_trash=use_trash, dry_run=dry_run,
+                                                    apps=apps_cache, opt=opt_cache)
                         view_stack.append(View(title=new_cat.title, kind="items", category=new_cat))
                         cursor = 0
                     else:
@@ -2635,7 +2796,18 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
             elif up == "G" and view.kind == "items" and view.category and view.category.key.startswith("fs:"):
                 base = Path(view.category.title)
                 threshold = int(load_config().get("large_file_min_mb", 512)) * 1024 * 1024
-                large = find_large_files(base, threshold)
+                # Scan with live progress animation
+                def _large_progress(scanned, found):
+                    filled = min(24, int(24 * (scanned % 50000) / 50000))
+                    bar = "[" + "█" * filled + "·" * (24 - filled) + "]"
+                    ptext = Text()
+                    ptext.append(f"{bar}  Scanned {scanned} files", style="bright_cyan")
+                    ptext.append(f"  Found {found} large", style="bright_yellow")
+                    live.update(Group(
+                        render(scanner, view, cursor, "", use_trash, dry_run, apps_cache, opt_cache),
+                        Panel(ptext, title="Scanning large files…", border_style="cyan", padding=(1, 2)),
+                    ))
+                large = find_large_files(base, threshold, on_progress=_large_progress)
                 cat = Category(
                     key=f"fs-large:{base}",
                     title=f"Large Files · {base}",
@@ -2648,6 +2820,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                     cat.items.append(Item(path=Path(row["path"]), size=int(row["size"]), selected=False))
                 view_stack.append(View(title=cat.title, kind="items", category=cat))
                 cursor = 0
+                msg = f"Found {len(large)} large files (>= {human_size(threshold)})"
             elif up == "V" and view.kind == "items" and view.category and view.category.key.startswith("fs:"):
                 drives = build_drive_picker_category()
                 view_stack.append(View(title=drives.title, kind="items", category=drives))
@@ -2701,7 +2874,10 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                 if view.kind in ("cats", "items"):
                     if view.kind == "items" and view.category and view.category.key.startswith("fs:"):
                         base = view.category.title
-                        view_stack = [View(title=f"Analyze · {base}", kind="items", category=build_fs_category(Path(base)))]
+                        view_stack = [View(title=f"Analyze · {base}", kind="items", category=build_fs_category(Path(base), live=live, scanner=scanner,
+                                                                                                              view=view, cursor=cursor,
+                                                                                                              use_trash=use_trash, dry_run=dry_run,
+                                                                                                              apps=apps_cache, opt=opt_cache))]
                         cursor = 0
                         msg = "Refreshed."
                     else:

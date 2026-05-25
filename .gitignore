@@ -8,3 +8,5 @@ release/
 
 .vercel
 release-notes-*.md
+.claude/
+docs/superpowers/

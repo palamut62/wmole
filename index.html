@@ -189,11 +189,12 @@
 
             <div class="flex flex-wrap items-center gap-2 sm:gap-3 mb-6 sm:mb-8">
               <a
-                href="https://github.com/palamut62/wmole/releases/download/v0.1.0/wmole-0.1.0-setup.exe"
+                id="hero-download"
+                href="https://github.com/palamut62/wmole/releases/latest"
                 class="inline-flex items-center gap-2 rounded-md bg-primary px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity"
               >
                 <i data-lucide="download" class="w-4 h-4"></i>
-                Download Installer v0.1.0
+                <span id="hero-download-label">Download Latest Installer</span>
               </a>
               <a
                 href="https://github.com/palamut62/wmole"
@@ -463,8 +464,10 @@
   <!-- CHANGELOG PAGE -->
   <div id="tab-changelog" class="tab-content">
     <main class="mx-auto max-w-4xl px-4 sm:px-6 py-6 sm:py-10">
-      <div class="space-y-8">
-        
+      <div id="changelog-list" class="space-y-8">
+
+        <!-- Releases injected dynamically from GitHub API; static fallback below -->
+
         <!-- Release 0.1.0 -->
         <article class="rounded-xl border bg-card overflow-hidden">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b px-4 sm:px-6 py-4 bg-muted/30">
@@ -607,6 +610,128 @@
     if (['home', 'about', 'changelog'].includes(initialHash)) {
       switchTab(initialHash);
     }
+
+    // ---- Dynamic GitHub Releases -> Changelog & Hero Download ----
+    const GH_REPO = 'palamut62/wmole';
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Minimal markdown -> HTML (headings, lists, bold, italic, inline code, links)
+    function renderMarkdown(md) {
+      const lines = (md || '').replace(/\r\n/g, '\n').split('\n');
+      let html = '';
+      let inList = false;
+      const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+      const inline = (t) => escapeHtml(t)
+        .replace(/`([^`]+)`/g, '<code class="code-font text-xs bg-muted/40 px-1 py-0.5 rounded">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline">$1</a>');
+      for (const raw of lines) {
+        const line = raw.trimEnd();
+        if (!line.trim()) { closeList(); continue; }
+        let m;
+        if ((m = line.match(/^###\s+(.*)$/))) { closeList(); html += `<h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mt-3 mb-1.5">${inline(m[1])}</h3>`; continue; }
+        if ((m = line.match(/^##\s+(.*)$/))) { closeList(); html += `<h2 class="text-base font-semibold text-foreground mt-3 mb-1.5">${inline(m[1])}</h2>`; continue; }
+        if ((m = line.match(/^#\s+(.*)$/))) { closeList(); html += `<h2 class="text-lg font-semibold text-foreground mt-3 mb-2">${inline(m[1])}</h2>`; continue; }
+        if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+          if (!inList) { html += '<ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">'; inList = true; }
+          html += `<li>${inline(m[1])}</li>`;
+          continue;
+        }
+        closeList();
+        html += `<p class="text-sm text-muted-foreground leading-relaxed">${inline(line)}</p>`;
+      }
+      closeList();
+      return html;
+    }
+
+    function formatDate(iso) {
+      try {
+        return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+      } catch { return iso; }
+    }
+
+    function pickInstallerAsset(assets) {
+      if (!assets || !assets.length) return null;
+      return assets.find(a => /setup\.exe$/i.test(a.name))
+          || assets.find(a => /\.(exe|msi)$/i.test(a.name))
+          || assets[0];
+    }
+
+    function renderRelease(rel, isLatest) {
+      const installer = pickInstallerAsset(rel.assets);
+      const downloadUrl = installer ? installer.browser_download_url : rel.html_url;
+      const downloadLabel = installer ? `Download ${installer.name}` : 'View Release';
+      const badge = isLatest
+        ? '<span class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">Latest Release</span>'
+        : (rel.prerelease ? '<span class="rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 px-2 py-0.5 text-xs font-medium">Pre-release</span>' : '');
+      const title = escapeHtml(rel.name || rel.tag_name);
+      return `
+        <article class="rounded-xl border bg-card overflow-hidden">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b px-4 sm:px-6 py-4 bg-muted/30">
+            <div class="flex items-center gap-3">
+              <img src="assets/icons/desktop/hicolor/512x512/apps/wmole.png" alt="" class="w-8 h-8 rounded-lg shrink-0" />
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <i data-lucide="tag" class="w-3.5 h-3.5 text-muted-foreground"></i>
+                  <span class="font-semibold text-foreground">${escapeHtml(rel.tag_name)}</span>
+                  ${badge}
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
+                  <i data-lucide="calendar" class="w-3 h-3"></i>
+                  ${formatDate(rel.published_at || rel.created_at)}
+                </div>
+              </div>
+            </div>
+            <a href="${downloadUrl}" class="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity self-start sm:self-auto">
+              <i data-lucide="download" class="w-3.5 h-3.5"></i>
+              ${escapeHtml(downloadLabel)}
+            </a>
+          </div>
+          <div class="px-4 sm:px-6 py-4 sm:py-5 space-y-2">
+            <h2 class="text-lg font-semibold text-foreground">${title}</h2>
+            ${renderMarkdown(rel.body || '_No release notes provided._')}
+          </div>
+        </article>`;
+    }
+
+    async function loadReleases() {
+      try {
+        const res = await fetch(`https://api.github.com/repos/${GH_REPO}/releases?per_page=20`, {
+          headers: { 'Accept': 'application/vnd.github+json' }
+        });
+        if (!res.ok) throw new Error('GitHub API ' + res.status);
+        const releases = await res.json();
+        if (!Array.isArray(releases) || !releases.length) return;
+
+        // Update hero download to point at latest release's installer
+        const latest = releases.find(r => !r.draft && !r.prerelease) || releases[0];
+        const heroAsset = pickInstallerAsset(latest.assets);
+        const heroEl = document.getElementById('hero-download');
+        const heroLabel = document.getElementById('hero-download-label');
+        if (heroEl && heroAsset) {
+          heroEl.href = heroAsset.browser_download_url;
+          if (heroLabel) heroLabel.textContent = `Download Installer ${latest.tag_name}`;
+        }
+
+        // Render changelog list (replaces static fallback)
+        const container = document.getElementById('changelog-list');
+        if (container) {
+          container.innerHTML = releases
+            .map((r, i) => renderRelease(r, r === latest))
+            .join('');
+          lucide.createIcons();
+        }
+      } catch (e) {
+        // Keep static fallback content silently on failure
+        console.warn('Failed to load releases:', e);
+      }
+    }
+
+    loadReleases();
   </script>
 </body>
 </html>

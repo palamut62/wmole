@@ -2238,10 +2238,162 @@ def cli_remove(dry_run: bool, json_out: bool) -> None:
             print(f"{row['path']}: {row['result']}")
 
 
+# ---------- Developer ports (listening localhost sockets) ----------
+# Common dev-server defaults; used to flag entries as "well-known dev port".
+DEV_PORT_HINTS: Dict[int, str] = {
+    3000: "Node/React", 3001: "Node alt", 4000: "Phoenix/Gatsby",
+    4200: "Angular", 5000: "Flask/.NET", 5173: "Vite", 5174: "Vite alt",
+    5500: "Live Server", 8000: "Django/Python http", 8080: "Generic web",
+    8081: "Webpack/Metro", 8888: "Jupyter", 9000: "PHP-FPM/SonarQube",
+    9229: "Node debug", 27017: "MongoDB", 5432: "Postgres", 3306: "MySQL",
+    6379: "Redis", 11434: "Ollama",
+}
+
+_LOCAL_IPS = {"127.0.0.1", "0.0.0.0", "::1", "::", ""}
+
+
+def list_dev_ports(include_all: bool = False) -> List[dict]:
+    """Return listening TCP/UDP sockets bound to localhost/0.0.0.0.
+
+    include_all=True keeps every listener regardless of bind address.
+    """
+    if not psutil:
+        return []
+    rows: Dict[tuple, dict] = {}
+    for kind in ("tcp", "udp"):
+        try:
+            conns = psutil.net_connections(kind=kind)
+        except (psutil.AccessDenied, PermissionError):
+            # Need admin on Windows to enumerate other users' sockets.
+            try:
+                conns = psutil.net_connections(kind=kind)
+            except Exception:
+                conns = []
+        except Exception:
+            conns = []
+        for c in conns:
+            if kind == "tcp" and c.status != psutil.CONN_LISTEN:
+                continue
+            if not c.laddr:
+                continue
+            ip = getattr(c.laddr, "ip", "")
+            port = getattr(c.laddr, "port", 0)
+            if not port:
+                continue
+            if not include_all and ip not in _LOCAL_IPS:
+                continue
+            key = (kind, ip, port, c.pid)
+            if key in rows:
+                continue
+            name = ""
+            exe = ""
+            if c.pid:
+                try:
+                    proc = psutil.Process(c.pid)
+                    name = proc.name()
+                    try:
+                        exe = proc.exe()
+                    except Exception:
+                        exe = ""
+                except Exception:
+                    pass
+            rows[key] = {
+                "proto": kind.upper(),
+                "ip": ip,
+                "port": port,
+                "pid": c.pid,
+                "process": name,
+                "exe": exe,
+                "hint": DEV_PORT_HINTS.get(port, ""),
+            }
+    return sorted(rows.values(), key=lambda r: (r["port"], r["proto"]))
+
+
+def kill_pid(pid: int, dry_run: bool = False, force: bool = True) -> str:
+    if not pid:
+        return "no pid"
+    if dry_run:
+        return f"would kill pid {pid}"
+    if not psutil:
+        return "psutil unavailable"
+    try:
+        proc = psutil.Process(pid)
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+        return f"killed pid {pid}"
+    except psutil.NoSuchProcess:
+        return f"pid {pid} already gone"
+    except psutil.AccessDenied:
+        return f"access denied for pid {pid} (run as admin)"
+    except Exception as exc:
+        return f"failed pid {pid}: {exc}"
+
+
+def cli_ports(json_out: bool, kill_target: str = "", dry_run: bool = False,
+              include_all: bool = False) -> None:
+    """List listening dev ports, or kill by port/PID/'all'."""
+    rows = list_dev_ports(include_all=include_all)
+
+    if kill_target:
+        target = kill_target.strip().lower()
+        if target == "all":
+            victims = rows
+        elif target.isdigit():
+            n = int(target)
+            # match by port first, else by PID
+            victims = [r for r in rows if r["port"] == n] or \
+                      [r for r in rows if r["pid"] == n]
+        else:
+            print(json.dumps({"error": f"invalid --kill target: {kill_target}"}, indent=2)
+                  if json_out else f"invalid --kill target: {kill_target}")
+            return
+        results = []
+        seen_pids = set()
+        for r in victims:
+            if not r["pid"] or r["pid"] in seen_pids:
+                continue
+            seen_pids.add(r["pid"])
+            msg = kill_pid(r["pid"], dry_run=dry_run)
+            log_operation("port_kill", Path(f"pid:{r['pid']}:{r['proto']}:{r['port']}"),
+                          0, msg)
+            results.append({**r, "result": msg})
+        if json_out:
+            print(json.dumps({"killed": results, "dry_run": dry_run}, indent=2))
+        else:
+            if not results:
+                print("no matching listening ports.")
+                return
+            for r in results:
+                print(f"{r['proto']}/{r['port']:>5}  pid {r['pid']:>6}  "
+                      f"{r['process'] or '-':<20}  {r['result']}")
+        return
+
+    if json_out:
+        print(json.dumps({"ports": rows, "count": len(rows)}, indent=2))
+        return
+
+    if not rows:
+        print("no listening localhost ports detected (run as admin to see all).")
+        return
+    print(f"{'PROTO':<5} {'PORT':>6}  {'PID':>6}  {'PROCESS':<22} {'BIND':<16} HINT")
+    print("-" * 78)
+    for r in rows:
+        print(f"{r['proto']:<5} {r['port']:>6}  {str(r['pid'] or '-'):>6}  "
+              f"{(r['process'] or '-')[:22]:<22} {r['ip']:<16} {r['hint']}")
+    print()
+    print("Kill: wmole ports --kill <port|pid|all>   (add --dry-run to preview)")
+
+
 def powershell_completion_script() -> str:
     return """Register-ArgumentCompleter -CommandName wmole, py -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $modes = 'analyze','clean','purge','status','optimize','uninstall','installer','installers','update','remove','completion'
+    $modes = 'analyze','clean','purge','status','optimize','uninstall','installer','installers','update','remove','completion','ports'
     $modes | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {
         [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
     }
@@ -2266,7 +2418,7 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
 def main_cli() -> None:
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
-                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion"])
+                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports"])
     p.add_argument("targets", nargs="*", help="optional paths for analyze/purge/installers")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true", dest="json_out")
@@ -2277,6 +2429,8 @@ def main_cli() -> None:
     p.add_argument("--whitelist", default=str(WHITELIST_FILE), help="whitelist file path")
     p.add_argument("--shell", default="powershell", help="completion shell")
     p.add_argument("--install", action="store_true", help="install completion script under ~/.wmole")
+    p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
+    p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
     args = p.parse_args()
 
     target_paths = [Path(t).expanduser() for t in args.targets]
@@ -2338,6 +2492,9 @@ def main_cli() -> None:
         cli_remove(dry_run=args.dry_run, json_out=args.json_out)
     elif args.mode == "completion":
         cli_completion(shell=args.shell, install=args.install, json_out=args.json_out)
+    elif args.mode == "ports":
+        cli_ports(json_out=args.json_out, kill_target=args.kill,
+                  dry_run=args.dry_run, include_all=args.all_binds)
     else:
         run_tui(initial_view=args.mode if args.mode in ("status", "optimize", "uninstall", "purge", "installer", "installers") else "analyze")
 

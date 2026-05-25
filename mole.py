@@ -89,7 +89,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -1714,6 +1714,348 @@ def palette_extra_height(query: str, max_rows: int = 12) -> int:
     return min(len(filter_palette(query)), max_rows) + 5
 
 
+def T_update(key: str, **kw) -> str:
+    # A custom translation dictionary for the update modal to keep code organized
+    strings = {
+        "tr": {
+            "checking": "Güncelleme kontrol ediliyor, lütfen bekleyin...",
+            "git_updating": "Kaynak kodu güncelleniyor (git pull)...",
+            "git_success": "Kaynak kodu başarıyla güncellendi!\n{output}",
+            "git_fail": "Kaynak kod güncellemesi başarısız oldu:\n{output}",
+            "up_to_date": "Uygulama zaten güncel (v{ver}).",
+            "fail_reach": "GitHub API'sine ulaşılamadı. Lütfen internet bağlantınızı kontrol edin.",
+            "no_asset": "Bu sürüm için uygun bir yükleyici bulunamadı.",
+            "ready_title": "  GÜNCELLEME HAZIR  ",
+            "ready_prompt": "Yeni sürüm (v{latest}) zaten indirildi ve hazır!\n\nŞimdi uygulayıp wmole'u yeniden başlatmak istiyor musunuz?\n\n[Enter] Evet (Yeniden Başlat)  ·  [Esc] İptal",
+            "found_title": "  GÜNCELLEME MEVCUT  ",
+            "found_prompt": "Yeni sürüm mevcut: v{latest}\n\nİndirmek istiyor musunuz?\n\n[Enter] İndirmeyi Başlat  ·  [Esc] İptal",
+            "downloading": "Yükleyici indiriliyor: {name}\nİlerleme: {pct:>3d}%",
+            "download_fail": "İndirme başarısız oldu: {err}",
+            "download_success_title": "  İNDİRME TAMAMLANDI  ",
+            "download_success_prompt": "Yeni sürüm (v{latest}) başarıyla indirildi!\n\nŞimdi kurmak ve wmole'u yeniden başlatmak istiyor musunuz?\n\n[Enter] Evet (Kur ve Başlat)  ·  [Esc] Hayır (Çıkışta uygulansın)",
+            "postpone": "Güncelleme indirildi, wmole kapatıldığında otomatik kurulacaktır.",
+            "applying": "Güncelleme kuruluyor, wmole kapatılıyor...",
+        },
+        "en": {
+            "checking": "Checking for updates, please wait...",
+            "git_updating": "Updating source code (git pull)...",
+            "git_success": "Source code updated successfully!\n{output}",
+            "git_fail": "Source code update failed:\n{output}",
+            "up_to_date": "Application is already up to date (v{ver}).",
+            "fail_reach": "Could not reach GitHub API. Please check your connection.",
+            "no_asset": "No installer asset found for this release.",
+            "ready_title": "  UPDATE READY  ",
+            "ready_prompt": "New version (v{latest}) is already downloaded and ready!\n\nDo you want to apply it and restart wmole now?\n\n[Enter] Yes (Restart)  ·  [Esc] Cancel",
+            "found_title": "  UPDATE AVAILABLE  ",
+            "found_prompt": "New version available: v{latest}\n\nDo you want to download it?\n\n[Enter] Start Download  ·  [Esc] Cancel",
+            "downloading": "Downloading installer: {name}\nProgress: {pct:>3d}%",
+            "download_fail": "Download failed: {err}",
+            "download_success_title": "  DOWNLOAD COMPLETE  ",
+            "download_success_prompt": "New version (v{latest}) successfully downloaded!\n\nDo you want to apply it and restart wmole now?\n\n[Enter] Yes (Install & Restart)  ·  [Esc] No (Apply on exit)",
+            "postpone": "Update staged, will be installed automatically when you close wmole.",
+            "applying": "Applying update, closing wmole...",
+        }
+    }
+    s = strings.get(LANG, strings["tr"]).get(key) or strings["en"].get(key, key)
+    return s.format(**kw) if kw else s
+
+
+def interactive_tui_update(live: Live, scanner: Scanner, view: View, cursor: int,
+                            apps_cache: List[dict], opt_cache: List[dict],
+                            use_trash: bool, dry_run: bool) -> str:
+    border_color = "red" if not use_trash else "magenta"
+    
+    # 1. Developer / Source code Mode (sys.frozen is False)
+    if not getattr(sys, "frozen", False):
+        body_txt = Text("\n" + T_update("git_updating") + "\n", style="bold cyan")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        
+        # Perform git pull and dependency upgrade
+        steps = []
+        if path_exists(Path(".git")):
+            r = subprocess.run(["git", "pull", "--ff-only"], capture_output=True, text=True, shell=False)
+            git_ok = (r.returncode == 0)
+            git_out = (r.stdout or r.stderr).strip()
+        else:
+            git_ok = False
+            git_out = "not a git repository"
+            
+        if git_ok:
+            # Upgrade dependencies
+            r2 = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "rich", "send2trash", "psutil"],
+                                capture_output=True, text=True, shell=False)
+            body_txt = Text("\n" + T_update("git_success", output=git_out) + "\n", style="bold green")
+        else:
+            body_txt = Text("\n" + T_update("git_fail", output=git_out) + "\n", style="bold red")
+            
+        body_txt.append("\n\n" + T("confirm_keys").split("·")[-1].strip(), style="bold cyan") # Esc to close
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        while True:
+            k = read_key()
+            if k in ("ESC", "ENTER"):
+                break
+        return T_update("git_success", output="") if git_ok else T_update("git_fail", output="")
+
+    # 2. Frozen/Exe Mode
+    # First show "Checking..."
+    body_txt = Text("\n" + T_update("checking") + "\n", style="bold cyan")
+    modal = Panel(
+        Align.center(body_txt, vertical="middle"),
+        title="wmole update",
+        title_align="center",
+        border_style=border_color,
+        padding=(1, 2)
+    )
+    live.update(modal)
+    
+    rel = fetch_latest_release()
+    if not rel:
+        body_txt = Text("\n" + T_update("fail_reach") + "\n", style="bold red")
+        body_txt.append("\n\n" + T("confirm_keys").split("·")[-1].strip(), style="bold cyan")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        while True:
+            k = read_key()
+            if k in ("ESC", "ENTER"):
+                break
+        return T_update("fail_reach")
+        
+    latest_tag = rel.get("tag_name", "")
+    latest_ver = _parse_semver(latest_tag)
+    current_ver = _parse_semver(__version__)
+    
+    if latest_ver <= current_ver:
+        body_txt = Text("\n" + T_update("up_to_date", ver=__version__) + "\n", style="bold green")
+        body_txt.append("\n\n" + T("confirm_keys").split("·")[-1].strip(), style="bold cyan")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        while True:
+            k = read_key()
+            if k in ("ESC", "ENTER"):
+                break
+        return T_update("up_to_date", ver=__version__)
+        
+    asset = _pick_installer_asset(rel.get("assets", []))
+    if not asset:
+        body_txt = Text("\n" + T_update("no_asset") + "\n", style="bold red")
+        body_txt.append("\n\n" + T("confirm_keys").split("·")[-1].strip(), style="bold cyan")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        while True:
+            k = read_key()
+            if k in ("ESC", "ENTER"):
+                break
+        return T_update("no_asset")
+        
+    url = asset["browser_download_url"]
+    name = asset["name"]
+    expected_size = int(asset.get("size") or 0)
+    dest = TEMP / name
+    
+    # Check if we already have this exact installer staged.
+    already_staged = False
+    if PENDING_UPDATE_FILE.exists():
+        try:
+            cur = json.loads(PENDING_UPDATE_FILE.read_text(encoding="utf-8"))
+            cur_path = Path(cur.get("path", ""))
+            if (cur.get("version") == latest_tag and cur_path.exists()
+                    and (expected_size == 0 or cur_path.stat().st_size == expected_size)):
+                already_staged = True
+        except Exception:
+            pass
+            
+    if already_staged:
+        body_txt = Text("\n" + T_update("ready_prompt", latest=latest_tag) + "\n", style="bold green")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title=T_update("ready_title"),
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        
+        while True:
+            k = read_key()
+            if k == "ENTER":
+                # Apply immediately
+                body_txt = Text("\n" + T_update("applying") + "\n", style="bold green")
+                modal = Panel(Align.center(body_txt, vertical="middle"), title="wmole update", border_style=border_color)
+                live.update(modal)
+                time.sleep(1.0)
+                
+                DETACHED = 0x00000008
+                subprocess.Popen(
+                    [str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                    creationflags=DETACHED if os.name == "nt" else 0,
+                    close_fds=True,
+                )
+                try:
+                    log_operation("auto_update", dest, dest.stat().st_size, f"{__version__} -> {latest_tag}")
+                except Exception:
+                    pass
+                try:
+                    PENDING_UPDATE_FILE.unlink()
+                except Exception:
+                    pass
+                os._exit(0)
+            elif k == "ESC":
+                return f"update available: {latest_tag}"
+                
+    # If not staged, prompt to download
+    body_txt = Text("\n" + T_update("found_prompt", latest=latest_tag) + "\n", style="bold yellow")
+    modal = Panel(
+        Align.center(body_txt, vertical="middle"),
+        title=T_update("found_title"),
+        title_align="center",
+        border_style=border_color,
+        padding=(1, 2)
+    )
+    live.update(modal)
+    
+    k = read_key()
+    if k != "ENTER":
+        return T("cancelled")
+        
+    # Start download with live progress bar
+    try:
+        def _prog(read, total):
+            pct = int(read * 100 / total)
+            # Create a simple ASCII/Unicode progress bar
+            bar_len = 30
+            filled = int(bar_len * read / total)
+            bar_str = "█" * filled + "░" * (bar_len - filled)
+            
+            body_txt = Text("\n" + T_update("downloading", name=name, pct=pct) + "\n\n", style="bold cyan")
+            body_txt.append(f"  {bar_str}  {pct:3d}%\n", style="bright_blue")
+            modal = Panel(
+                Align.center(body_txt, vertical="middle"),
+                title="wmole update",
+                title_align="center",
+                border_style=border_color,
+                padding=(1, 2)
+            )
+            live.update(modal)
+            
+        _download(url, dest, on_progress=_prog)
+        
+        # Successfully downloaded, write pending file
+        PENDING_UPDATE_FILE.write_text(json.dumps({
+            "version": latest_tag,
+            "path": str(dest),
+            "downloaded_at": time.time(),
+            "from_version": __version__,
+        }), encoding="utf-8")
+        
+        # Save check file so background doesn't hit GitHub again soon
+        try:
+            WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+            UPDATE_CHECK_FILE.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
+        except Exception:
+            pass
+            
+    except Exception as exc:
+        body_txt = Text("\n" + T_update("download_fail", err=str(exc)) + "\n", style="bold red")
+        body_txt.append("\n\n" + T("confirm_keys").split("·")[-1].strip(), style="bold cyan")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        while True:
+            k = read_key()
+            if k in ("ESC", "ENTER"):
+                break
+        return T_update("download_fail", err=str(exc))
+        
+    # Download successful! Prompt for restart
+    body_txt = Text("\n" + T_update("download_success_prompt", latest=latest_tag) + "\n", style="bold green")
+    modal = Panel(
+        Align.center(body_txt, vertical="middle"),
+        title=T_update("download_success_title"),
+        title_align="center",
+        border_style=border_color,
+        padding=(1, 2)
+    )
+    live.update(modal)
+    
+    k = read_key()
+    if k == "ENTER":
+        # Apply immediately
+        body_txt = Text("\n" + T_update("applying") + "\n", style="bold green")
+        modal = Panel(Align.center(body_txt, vertical="middle"), title="wmole update", border_style=border_color)
+        live.update(modal)
+        time.sleep(1.0)
+        
+        DETACHED = 0x00000008
+        subprocess.Popen(
+            [str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            creationflags=DETACHED if os.name == "nt" else 0,
+            close_fds=True,
+        )
+        try:
+            log_operation("auto_update", dest, dest.stat().st_size, f"{__version__} -> {latest_tag}")
+        except Exception:
+            pass
+        try:
+            PENDING_UPDATE_FILE.unlink()
+        except Exception:
+            pass
+        os._exit(0)
+    else:
+        # User postponed
+        body_txt = Text("\n" + T_update("postpone") + "\n", style="bold green")
+        body_txt.append("\n\n" + T("confirm_keys").split("·")[-1].strip(), style="bold cyan")
+        modal = Panel(
+            Align.center(body_txt, vertical="middle"),
+            title="wmole update",
+            title_align="center",
+            border_style=border_color,
+            padding=(1, 2)
+        )
+        live.update(modal)
+        while True:
+            k = read_key()
+            if k in ("ESC", "ENTER"):
+                break
+        return f"update available: {latest_tag}"
+
+
 def format_tui_update_status(status: str) -> str:
     if LANG != "tr":
         return status
@@ -2076,6 +2418,14 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
         view_stack = [View(title=f"Analyze · {analyze_start}", kind="items", category=build_fs_category(analyze_start))]
     cursor = 0
     msg = ""
+    if PENDING_UPDATE_FILE.exists():
+        try:
+            info = json.loads(PENDING_UPDATE_FILE.read_text(encoding="utf-8"))
+            ver_tag = info.get("version", "")
+            if _parse_semver(ver_tag) > _parse_semver(__version__):
+                msg = T_update("ready_prompt", latest=ver_tag).split("\n")[0]
+        except Exception:
+            pass
 
     with Live(console=console, refresh_per_second=8, screen=True, vertical_overflow="crop") as live:
         while True:
@@ -2166,8 +2516,9 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                                 msg = f"ports query failed: {e}"
                         elif action == "exec:update":
                             try:
-                                msg = format_tui_update_status(
-                                    cli_update(json_out=False, yes=False, dry_run=False, quiet=True)
+                                msg = interactive_tui_update(
+                                    live, scanner, view, cursor,
+                                    apps_cache, opt_cache, use_trash, dry_run
                                 )
                             except Exception as e:
                                 msg = f"update failed: {e}"
@@ -2774,11 +3125,6 @@ def _auto_update_worker() -> None:
             return
 
         rel = fetch_latest_release(timeout=5.0)
-        try:
-            WMOLE_DIR.mkdir(parents=True, exist_ok=True)
-            UPDATE_CHECK_FILE.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
-        except Exception:
-            pass
         if not rel:
             return
 
@@ -2788,6 +3134,11 @@ def _auto_update_worker() -> None:
             try:
                 if PENDING_UPDATE_FILE.exists():
                     PENDING_UPDATE_FILE.unlink()
+            except Exception:
+                pass
+            try:
+                WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+                UPDATE_CHECK_FILE.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
             except Exception:
                 pass
             return
@@ -2824,6 +3175,11 @@ def _auto_update_worker() -> None:
                 "downloaded_at": time.time(),
                 "from_version": __version__,
             }), encoding="utf-8")
+            try:
+                WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+                UPDATE_CHECK_FILE.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception:

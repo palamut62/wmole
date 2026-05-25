@@ -89,7 +89,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -1671,6 +1671,11 @@ def render_command_input() -> Panel:
     return Panel(line, border_style="grey35", padding=(0, 1))
 
 
+def palette_extra_height(query: str) -> int:
+    """Rows consumed beyond the idle command input when results are open."""
+    return min(len(filter_palette(query)), 12) + 4
+
+
 def render_help(scroll: int = 0) -> Group:
     sections = _help_sections_tr() if LANG == "tr" else _help_sections_en()
     body = Text()
@@ -1764,7 +1769,8 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
         total = sum(sizes) or 1
         max_pct = max((s / total * 100 for s in sizes), default=1)
 
-        reserved = 12 + len(footer_lines)
+        palette_rows = palette_extra_height(palette[0]) if palette is not None else 0
+        reserved = 12 + len(footer_lines) + palette_rows
         avail = max(5, (console.size.height or 30) - reserved)
         if len(rows) > avail:
             start = max(0, min(cursor - avail // 2, len(rows) - avail))

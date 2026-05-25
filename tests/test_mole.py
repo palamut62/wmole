@@ -211,6 +211,55 @@ class WmoleBehaviorTests(unittest.TestCase):
         self.assertNotIn("Shift+A", help_text)
         self.assertNotIn("A Analyze(FS)", footer_text)
 
+    def test_open_palette_places_command_rows_within_visible_terminal_height(self):
+        output = io.StringIO()
+        test_console = Console(
+            record=True, width=140, height=40, color_system=None, file=output
+        )
+        items = [
+            mole.Item(path=Path(fr"C:\Users\example\folder-{index}"), size=index + 1)
+            for index in range(30)
+        ]
+        category = mole.Category(
+            key="fs:test",
+            title=r"C:\Users\example",
+            description="",
+            items=items,
+            scanning=False,
+        )
+        scanner = mock.Mock(
+            status="",
+            done=True,
+            current_cat_key=None,
+            current_item_id=None,
+        )
+        view = mole.View(title=category.title, kind="items", category=category)
+
+        with (
+            mock.patch.object(mole, "console", test_console),
+            mock.patch.object(mole, "LANG", "en"),
+            mock.patch.object(mole, "free_space_gb", return_value=18.1),
+        ):
+            test_console.print(
+                mole.render(
+                    scanner, view, 0, "", True, False, [], [], palette=("", 0)
+                )
+            )
+
+        lines = test_console.export_text().splitlines()
+        first_command_row = next(
+            (index for index, line in enumerate(lines) if "/analyze" in line),
+            None,
+        )
+        last_command_row = next(
+            (index for index, line in enumerate(lines) if "/help" in line),
+            None,
+        )
+        self.assertIsNotNone(first_command_row)
+        self.assertIsNotNone(last_command_row)
+        self.assertLess(first_command_row, test_console.height)
+        self.assertLess(last_command_row, test_console.height)
+
     def test_parse_paths_arg_supports_semicolon_and_comma(self):
         paths = mole.parse_paths_arg(r"C:\A;C:\B, C:\C")
         self.assertEqual(paths, [Path(r"C:\A"), Path(r"C:\B"), Path(r"C:\C")])

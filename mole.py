@@ -1946,23 +1946,10 @@ def interactive_tui_update(live: Live, scanner: Scanner, view: View, cursor: int
                 body_txt = Text("\n" + T_update("applying") + "\n", style="bold green")
                 modal = Panel(Align.center(body_txt, vertical="middle"), title="wmole update", border_style=border_color)
                 live.update(modal)
-                time.sleep(1.0)
-                
-                DETACHED = 0x00000008
-                subprocess.Popen(
-                    [str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-                    creationflags=DETACHED if os.name == "nt" else 0,
-                    close_fds=True,
-                )
-                try:
-                    log_operation("auto_update", dest, dest.stat().st_size, f"{__version__} -> {latest_tag}")
-                except Exception:
-                    pass
-                try:
-                    PENDING_UPDATE_FILE.unlink()
-                except Exception:
-                    pass
-                os._exit(0)
+                time.sleep(0.8)
+                # Smart launch: uses setup flags for installers, batch-swap for raw EXEs
+                _launch_updated(dest, name, latest_tag)
+                # _launch_updated calls os._exit(0), so we never reach here
             elif k == "ESC":
                 return f"update available: {latest_tag}"
                 
@@ -2006,6 +1993,7 @@ def interactive_tui_update(live: Live, scanner: Scanner, view: View, cursor: int
         # Successfully downloaded, write pending file
         PENDING_UPDATE_FILE.write_text(json.dumps({
             "version": latest_tag,
+            "name": name,
             "path": str(dest),
             "downloaded_at": time.time(),
             "from_version": __version__,
@@ -2052,23 +2040,10 @@ def interactive_tui_update(live: Live, scanner: Scanner, view: View, cursor: int
         body_txt = Text("\n" + T_update("applying") + "\n", style="bold green")
         modal = Panel(Align.center(body_txt, vertical="middle"), title="wmole update", border_style=border_color)
         live.update(modal)
-        time.sleep(1.0)
-        
-        DETACHED = 0x00000008
-        subprocess.Popen(
-            [str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-            creationflags=DETACHED if os.name == "nt" else 0,
-            close_fds=True,
-        )
-        try:
-            log_operation("auto_update", dest, dest.stat().st_size, f"{__version__} -> {latest_tag}")
-        except Exception:
-            pass
-        try:
-            PENDING_UPDATE_FILE.unlink()
-        except Exception:
-            pass
-        os._exit(0)
+        time.sleep(0.8)
+        # Smart launch: uses setup flags for installers, batch-swap for raw EXEs
+        _launch_updated(dest, name, latest_tag)
+        # _launch_updated calls os._exit(0), so we never reach here
     else:
         # User postponed
         body_txt = Text("\n" + T_update("postpone") + "\n", style="bold green")
@@ -3140,13 +3115,106 @@ def fetch_latest_release(repo: str = GITHUB_REPO, timeout: float = 10.0) -> Opti
 def _pick_installer_asset(assets: List[dict]) -> Optional[dict]:
     if not assets:
         return None
+    # Prefer Inno Setup installer by name
     for a in assets:
         if re.search(r"setup\.exe$", a.get("name", ""), re.IGNORECASE):
             return a
+    # Fall back to any .exe or .msi
     for a in assets:
         if re.search(r"\.(exe|msi)$", a.get("name", ""), re.IGNORECASE):
             return a
     return assets[0]
+
+
+def _is_installer_asset(name: str) -> bool:
+    """True if the asset name looks like an Inno Setup / MSI installer (not a raw exe)."""
+    return bool(re.search(r"(setup|installer|\.msi)$", name, re.IGNORECASE))
+
+
+def _create_swap_batch(new_exe: Path, current_exe: Path) -> Path:
+    """Create a .bat script that swaps new_exe → current_exe after this process exits.
+
+    Returns the path to the batch file. The caller is responsible for launching it
+    detached and then exiting.
+    """
+    batch = TEMP / "wmole-update.bat"
+    # Batch script that:
+    # 1. Waits for old wmole to fully exit (file unlocked)
+    # 2. Copies new EXE over the old location
+    # 3. Verifies the copy succeeded
+    # 4. Starts the new EXE
+    # 5. Self-deletes
+    bat_content = (
+        "@echo off\r\n"
+        "setlocal enabledelayedexpansion\r\n"
+        "title wmole update\r\n"
+        'echo [wmole] Updating...\r\n'
+        "\r\n"
+        "rem Wait up to 15 seconds for the old process to release the file\r\n"
+        "set /a attempts=0\r\n"
+        ":waitloop\r\n"
+        "   set /a attempts+=1\r\n"
+        f'   copy /Y "{new_exe}" "{current_exe}" >nul 2>&1\r\n'
+        "   if !errorlevel! equ 0 goto launch\r\n"
+        "   if !attempts! geq 15 goto fail\r\n"
+        "   timeout /t 1 /nobreak >nul 2>&1\r\n"
+        "   goto waitloop\r\n"
+        "\r\n"
+        ":launch\r\n"
+        f'   echo [wmole] Updated to {{__version__}}. Starting...\r\n'
+        f'   start "" "{current_exe}"\r\n'
+        "   del \"%~f0\" & exit /b 0\r\n"
+        "\r\n"
+        ":fail\r\n"
+        '   echo [wmole] Update failed: could not replace old exe (file locked).\r\n'
+        f'   echo [wmole] New version is at: {new_exe}\r\n'
+        "   timeout /t 5 >nul\r\n"
+        "   del \"%~f0\" & exit /b 1\r\n"
+        "endlocal\r\n"
+    ).replace("{{__version__}}", __version__)
+    batch.write_text(bat_content, encoding="ascii")
+    return batch
+
+
+def _launch_updated(new_path: Path, asset_name: str, latest_tag: str) -> None:
+    """Launch the downloaded update, handling both installers and raw EXEs.
+
+    For Inno Setup / MSI installers: run with silent flags and exit.
+    For raw EXEs: create a swap batch, launch it detached, and exit.
+    """
+    is_installer = _is_installer_asset(asset_name)
+    DETACHED = 0x00000008  # DETACHED_PROCESS
+
+    log_operation("auto_update", new_path, new_path.stat().st_size,
+                  f"{__version__} -> {latest_tag}")
+
+    if is_installer:
+        # Inno Setup / MSI: run the installer silently
+        subprocess.Popen(
+            [str(new_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            creationflags=DETACHED if os.name == "nt" else 0,
+            close_fds=True,
+        )
+        try:
+            PENDING_UPDATE_FILE.unlink(missing_ok=True)  # type: ignore[arg-type]
+        except Exception:
+            pass
+    else:
+        # Raw EXE: create swap batch and launch it
+        current_exe = Path(sys.executable) if getattr(sys, "frozen", False) else new_path
+        batch = _create_swap_batch(new_path, current_exe)
+        try:
+            PENDING_UPDATE_FILE.unlink(missing_ok=True)  # type: ignore[arg-type]
+        except Exception:
+            pass
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(batch)],
+            creationflags=DETACHED if os.name == "nt" else 0,
+            close_fds=True,
+        )
+
+    sys.stderr.write(f"\n(wmole: installing update {latest_tag} in background)\n")
+    os._exit(0)
 
 
 def _download(url: str, dest: Path, on_progress=None) -> None:
@@ -3347,6 +3415,7 @@ def _auto_update_worker() -> None:
         try:
             PENDING_UPDATE_FILE.write_text(json.dumps({
                 "version": latest_tag,
+                "name": asset["name"],
                 "path": str(dest),
                 "downloaded_at": time.time(),
                 "from_version": __version__,
@@ -3395,30 +3464,14 @@ def apply_pending_update() -> bool:
             PENDING_UPDATE_FILE.unlink(missing_ok=True)  # type: ignore[arg-type]
             return False
         path = Path(info.get("path", ""))
+        asset_name = info.get("name", path.name)
         if not path.exists():
             PENDING_UPDATE_FILE.unlink(missing_ok=True)  # type: ignore[arg-type]
             return False
-        DETACHED = 0x00000008  # DETACHED_PROCESS
-        subprocess.Popen(
-            [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-            creationflags=DETACHED if os.name == "nt" else 0,
-            close_fds=True,
-        )
-        try:
-            log_operation("auto_update", path, path.stat().st_size,
-                          f"{__version__} -> {ver_tag}")
-        except Exception:
-            pass
-        try:
-            PENDING_UPDATE_FILE.unlink()
-        except Exception:
-            pass
-        # One quiet line on the way out, like Claude Code's "Updated to X".
-        try:
-            sys.stderr.write(f"\n(wmole: installing update {ver_tag} in background)\n")
-        except Exception:
-            pass
-        return True
+        # Smart launch: uses setup flags for installers, batch-swap for raw EXEs
+        _launch_updated(path, asset_name, ver_tag)
+        # _launch_updated calls os._exit(0), so we never reach here
+        return True  # unreachable, but keeps type checker happy
     except Exception:
         return False
 

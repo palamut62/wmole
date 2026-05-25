@@ -89,7 +89,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -191,6 +191,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "lang_switched":    "Dil: Türkçe",
         "footer_more":      "↑ üstte {n} öğe daha",
         "footer_less":      "↓ altta {n} öğe daha",
+        "title_help":       "Yardım & Özellikler",
+        "hint_help":        "[↑/↓] kaydır  ·  [Q]/[Esc] kapat",
+        "help_key":         "H Yardım",
     },
     "en": {
         "title_analyze":    "Analyze Disk",
@@ -227,6 +230,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "lang_switched":    "Language: English",
         "footer_more":      "↑ {n} more above",
         "footer_less":      "↓ {n} more below",
+        "title_help":       "Help & Features",
+        "hint_help":        "[↑/↓] scroll  ·  [Q]/[Esc] close",
+        "help_key":         "H Help",
     },
 }
 def _initial_lang() -> str:
@@ -1445,6 +1451,8 @@ def build_footer_lines(width: int) -> List[str]:
         ]
     )
     modes = [
+        "/ Komutlar" if LANG == "tr" else "/ Commands",
+        T("help_key"),
         "A Analyze(FS)",
         "C Analyze(Cats)",
         "P Purge",
@@ -1462,8 +1470,216 @@ def build_footer_lines(width: int) -> List[str]:
 @dataclass
 class View:
     title: str
-    kind: str   # 'cats' | 'items' | 'status' | 'optimize' | 'uninstall'
+    kind: str   # 'cats' | 'items' | 'status' | 'optimize' | 'uninstall' | 'help'
     category: Optional[Category] = None
+    scroll: int = 0  # used by 'help'
+
+
+def _help_sections_tr() -> List[tuple]:
+    return [
+        ("wmole nedir?", [
+            "Windows için derin temizlik, optimize, kaldırma ve geliştirici",
+            "artıkları temizleme aracı. Tüm silmeler varsayılan olarak Geri",
+            "Dönüşüm Kutusu'na gider; KALICI mod açıkça onay ister.",
+        ]),
+        ("Ana modlar", [
+            "Shift+A · Analyze (FS)   Dosya sistemini gez, klasör boyutlarını gör",
+            "Shift+C · Analyze (Cats) Kategorilere göre toplu disk haritası",
+            "Shift+P · Purge          node_modules, build, venv vb. dev klasörleri",
+            "Shift+I · Installers     İndirilenlerdeki eski .exe/.msi setupları",
+            "Shift+U · Uninstall      Kurulu programlar + artık temizliği",
+            "Shift+M · Optimize       DNS flush, Windows Update reset, Storage Sense",
+            "Shift+S · Status         Canlı CPU/RAM/Disk/Ağ/Sıcaklık dashboard",
+        ]),
+        ("Liste navigasyonu", [
+            "↑/↓             imleci taşı",
+            "Enter           kategori/klasör aç, eylem çalıştır",
+            "Space           seç / seçimi kaldır (kategoride: tümü)",
+            "D               seçilenleri sil (onay diyaloğu açılır)",
+            "K               KALICI mod aç/kapa (kırmızı = geri alınamaz)",
+            "O               geçerli yolu Explorer'da aç",
+            "R               taramayı yenile",
+            "Q / Esc         bir seviye geri / TUI'den çık",
+        ]),
+        ("Dosya sistemi modunda ekstra", [
+            "G               eşik üstü büyük dosyaları listele (config: large_file_min_mb)",
+            "V               sürücü seçici (C:, D:, …)",
+        ]),
+        ("Kaldırma modunda ekstra", [
+            "L               seçili uygulamanın artık dosya/registry adaylarını tara",
+        ]),
+        ("Güvenlik", [
+            "• Varsayılan: send2trash → Geri Dönüşüm Kutusu'na taşır.",
+            "• Shift+K (K) ile KALICI mod açılır; başlık kırmızıya döner.",
+            "• ~/.wmole/whitelist.txt içinde listelenen yollara dokunulmaz.",
+            "• ~/.wmole/denylist.txt asla taranmaz (purge bile).",
+            "• Korumalı yollar (C:\\Windows, Program Files…) otomatik atlanır.",
+            "• Tüm silme/kaldırma/güncelleme ~/.wmole/logs/operations.log'a yazılır.",
+        ]),
+        ("CLI komutları (terminal)", [
+            "wmole                       TUI'yi başlatır (Analyze görünümü)",
+            "wmole clean [--dry-run]     güvenli kategorileri tek onayla siler",
+            "wmole purge [paths…]        node_modules/build/dist topluca sil",
+            "wmole installers            Downloads/Desktop'taki eski setupları bul",
+            "wmole uninstall --query x   kurulu programları filtrele",
+            "wmole optimize              DNS flush, WU reset, Storage Sense vs.",
+            "wmole status [--json]       sistem dashboard / makine-okur çıktı",
+            "wmole ports                 dinleyen geliştirici portlarını listele",
+            "wmole ports --kill 5173     porta veya PID'e göre süreci öldür",
+            "wmole ports --kill all      tüm localhost dinleyicilerini kapat",
+            "wmole update                yeniyse GitHub'dan installer ile yükselt",
+            "wmole update --disable-auto arka plan otomatik güncellemeyi kapat",
+        ]),
+        ("Otomatik güncelleme", [
+            "Her başlatmada GitHub Releases sessizce kontrol edilir (6 saatte 1).",
+            "Yeni sürüm varsa installer %TEMP%'e indirilir ve wmole çıkışında",
+            "/VERYSILENT modda kurulur. Bir dahaki açılışta yeni sürümdesiniz.",
+            "Devre dışı: wmole update --disable-auto  veya  WMOLE_NO_AUTO_UPDATE=1",
+        ]),
+        ("İpuçları", [
+            "• T tuşu (henüz globalde değil, plan) → --dry-run önizleme",
+            "• \\ tuşu Türkçe ↔ English geçişi (config'e yazılır)",
+            "• Tarama büyük disklerde 1-2 dk sürebilir, animasyon aktiftir.",
+            "• Sorun bildirme: https://github.com/palamut62/wmole/issues",
+        ]),
+    ]
+
+
+def _help_sections_en() -> List[tuple]:
+    return [
+        ("What is wmole?", [
+            "A Windows toolkit for deep cleaning, optimization, uninstall, and",
+            "developer-leftover sweeps. All deletes go to the Recycle Bin by",
+            "default; PERMANENT mode requires explicit opt-in.",
+        ]),
+        ("Top-level modes", [
+            "Shift+A · Analyze (FS)    Browse the filesystem with live folder sizes",
+            "Shift+C · Analyze (Cats)  Category breakdown of disk usage",
+            "Shift+P · Purge           node_modules, build, venv & friends",
+            "Shift+I · Installers      Old .exe/.msi setups in Downloads",
+            "Shift+U · Uninstall       Installed programs + leftover sweep",
+            "Shift+M · Optimize        DNS flush, Windows Update reset, Storage Sense",
+            "Shift+S · Status          Live CPU/RAM/Disk/Net/Temperature dashboard",
+        ]),
+        ("List navigation", [
+            "↑/↓             move cursor",
+            "Enter           open category/folder, run action",
+            "Space           toggle selection (on a category: select all)",
+            "D               delete selected (confirm dialog opens)",
+            "K               toggle PERMANENT mode (red = non-recoverable)",
+            "O               open current path in Explorer",
+            "R               refresh scan",
+            "Q / Esc         back one level / exit TUI",
+        ]),
+        ("FS mode extras", [
+            "G               list files larger than threshold (config: large_file_min_mb)",
+            "V               drive picker (C:, D:, …)",
+        ]),
+        ("Uninstall extras", [
+            "L               scan leftover file + registry candidates for the selected app",
+        ]),
+        ("Safety", [
+            "• Default: send2trash → moves into Recycle Bin.",
+            "• Shift+K toggles PERMANENT mode; header turns red.",
+            "• Paths in ~/.wmole/whitelist.txt are never touched.",
+            "• ~/.wmole/denylist.txt is never even scanned (even by purge).",
+            "• Protected paths (C:\\Windows, Program Files…) auto-skipped.",
+            "• All delete/uninstall/update actions log to ~/.wmole/logs/operations.log.",
+        ]),
+        ("CLI commands (terminal)", [
+            "wmole                       launch TUI (Analyze view)",
+            "wmole clean [--dry-run]     one-confirm wipe of safe categories",
+            "wmole purge [paths…]        bulk-delete node_modules/build/dist",
+            "wmole installers            find old setups in Downloads/Desktop",
+            "wmole uninstall --query x   filter installed programs",
+            "wmole optimize              DNS flush, WU reset, Storage Sense, …",
+            "wmole status [--json]       system dashboard / machine-readable",
+            "wmole ports                 list listening developer ports",
+            "wmole ports --kill 5173     kill by port or PID",
+            "wmole ports --kill all      close every localhost listener",
+            "wmole update                check GitHub, upgrade in place if newer",
+            "wmole update --disable-auto turn off background auto-update",
+        ]),
+        ("Auto-update", [
+            "Every launch silently checks GitHub Releases (throttled to 6h).",
+            "If newer, installer is pre-downloaded to %TEMP% and installed",
+            "with /VERYSILENT when wmole exits. Next run = new version.",
+            "Opt out: wmole update --disable-auto  or  WMOLE_NO_AUTO_UPDATE=1",
+        ]),
+        ("Tips", [
+            "• \\ toggles Turkish ↔ English (persisted in config).",
+            "• Scans can take 1-2 min on large disks; animation indicates progress.",
+            "• Report issues: https://github.com/palamut62/wmole/issues",
+        ]),
+    ]
+
+
+# ---------- Command palette (Claude Code-style "/") ----------
+def palette_commands() -> List[dict]:
+    """The catalog shown when the user presses `/` in the TUI."""
+    tr = LANG == "tr"
+    def d(en, tr_): return tr_ if tr else en
+    return [
+        {"name": "analyze",   "desc": d("Browse the filesystem with live sizes", "Dosya sistemini canlı boyutlarla gez"),     "action": "view:analyze-fs"},
+        {"name": "categories","desc": d("Disk usage by category",                "Kategoriye göre disk dağılımı"),             "action": "view:cats"},
+        {"name": "purge",     "desc": d("Bulk-delete node_modules/build/dist",   "node_modules/build/dist toplu sil"),         "action": "view:purge"},
+        {"name": "installers","desc": d("Find old setups in Downloads/Desktop",  "İndirilenlerdeki eski setupları bul"),       "action": "view:installers"},
+        {"name": "uninstall", "desc": d("Installed programs + leftover sweep",   "Kurulu programlar + artık temizliği"),       "action": "view:uninstall"},
+        {"name": "optimize",  "desc": d("DNS flush, Windows Update reset, …",    "DNS flush, Windows Update reset, …"),        "action": "view:optimize"},
+        {"name": "status",    "desc": d("Live CPU/RAM/Disk/Net dashboard",       "Canlı CPU/RAM/Disk/Ağ dashboard"),           "action": "view:status"},
+        {"name": "ports",     "desc": d("List listening dev ports (run CLI to kill)", "Dinleyen dev portları (öldürme CLI'da)"), "action": "exec:ports"},
+        {"name": "update",    "desc": d("Check GitHub and self-update",          "GitHub kontrolü + kendini güncelle"),        "action": "exec:update"},
+        {"name": "help",      "desc": d("Open the help & features screen",      "Yardım & özellikler ekranını aç"),           "action": "view:help"},
+        {"name": "lang",      "desc": d("Toggle Turkish / English",             "Türkçe / İngilizce geçişi"),                 "action": "exec:lang"},
+        {"name": "permanent", "desc": d("Toggle PERMANENT delete mode",         "KALICI silme modunu aç/kapa"),               "action": "exec:permanent"},
+        {"name": "quit",      "desc": d("Exit wmole",                            "wmole'dan çık"),                              "action": "exec:quit"},
+    ]
+
+
+def filter_palette(query: str) -> List[dict]:
+    q = query.strip().lower().lstrip("/")
+    cmds = palette_commands()
+    if not q:
+        return cmds
+    return [c for c in cmds if q in c["name"].lower() or q in c["desc"].lower()]
+
+
+def render_palette(query: str, cursor: int) -> Panel:
+    rows = filter_palette(query)
+    if not rows:
+        body = Text("  (no matching command)\n", style="grey50")
+    else:
+        body = Text()
+        for i, c in enumerate(rows[:12]):
+            marker = "▶ " if i == cursor else "  "
+            style = "bright_cyan" if i == cursor else "white"
+            body.append(f"  {marker}/{c['name']:<12}", style=style)
+            body.append(f"  {c['desc']}\n", style="grey62" if i != cursor else "grey78")
+    header = Text()
+    header.append(" / ", style="bold magenta on grey15")
+    header.append(query, style="bold white")
+    header.append("█", style="bright_magenta")
+    header.append("\n", style="white")
+    hint = Text("\n  [↑/↓] choose   [Enter] run   [Esc] cancel   [Backspace] edit\n",
+                style="grey50")
+    return Panel(Group(header, body, hint),
+                 title=("Commands" if LANG != "tr" else "Komutlar"),
+                 border_style="bright_magenta", padding=(0, 1))
+
+
+def render_help(scroll: int = 0) -> Group:
+    sections = _help_sections_tr() if LANG == "tr" else _help_sections_en()
+    body = Text()
+    body.append(f"wmole v{__version__}", style="bold bright_cyan")
+    body.append("   ", style="grey50")
+    body.append("https://wmole.vercel.app", style="grey50")
+    body.append("\n\n")
+    for title, lines in sections:
+        body.append(f"  {title}\n", style="bold bright_yellow")
+        for ln in lines:
+            body.append(f"    {ln}\n", style="white")
+        body.append("\n")
+    return Group(body)
 
 
 def view_rows(view: View, scanner: Scanner) -> List[object]:
@@ -1477,7 +1693,8 @@ def view_rows(view: View, scanner: Scanner) -> List[object]:
 
 def render(scanner: Scanner, view: View, cursor: int, msg: str,
            use_trash: bool, dry_run: bool, apps_cache: List[dict],
-           opt_cache: List[dict]) -> Group:
+           opt_cache: List[dict],
+           palette: Optional[tuple] = None) -> Group:
     total_free = free_space_gb()
     footer_lines = build_footer_lines(console.size.width or 120)
 
@@ -1488,10 +1705,12 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
         "status":    T("title_status"),
         "optimize":  T("title_optimize"),
         "uninstall": T("title_uninstall"),
+        "help":      T("title_help"),
     }.get(view.kind, "wmole")
     permanent_mode = not use_trash
     header = Text()
     header.append(title, style="bold red" if permanent_mode else "bold magenta")
+    header.append(f"  v{__version__}", style="grey50")
     header.append("  " + T("free_suffix", free=total_free), style="grey62")
     mode_tags = [T("mode_permanent") if permanent_mode else T("mode_trash")]
     if dry_run: mode_tags.append(T("mode_dry_run"))
@@ -1511,9 +1730,15 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
         header.append(T("hint_optimize"), style="grey70")
     elif view.kind == "uninstall":
         header.append(T("hint_uninstall"), style="grey70")
+    elif view.kind == "help":
+        header.append(T("hint_help"), style="grey70")
 
     # Body
-    if view.kind == "status":
+    if view.kind == "help":
+        body = render_help(view.scroll)
+        rows_for_pad = 0
+        rows = []
+    elif view.kind == "status":
         # Status mode: fixed-height dashboard
         body = render_status()
         rows_for_pad = 0
@@ -1644,6 +1869,9 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
     status.append((line2 or " ") + "\n", style="yellow")
 
     footer = Text("\n".join(footer_lines), style="bold grey70")
+    if palette is not None:
+        p_query, p_cursor = palette
+        return Group(header, body, status, footer, render_palette(p_query, p_cursor))
     return Group(header, body, status, footer)
 
 
@@ -1766,6 +1994,10 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
 
     use_trash = True
     dry_run = False
+    # Claude Code-style slash command palette
+    palette_open = False
+    palette_query = ""
+    palette_cursor = 0
     if initial_view == "status":
         view_stack: List[View] = [View(title="Status", kind="status")]
     elif initial_view == "optimize":
@@ -1795,7 +2027,8 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                 rows = []
             if rows:
                 cursor = max(0, min(cursor, len(rows) - 1))
-            live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache))
+            live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
+                               palette=(palette_query, palette_cursor) if palette_open else None))
 
             key = None
             for _ in range(20):
@@ -1803,12 +2036,92 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                     key = read_key()
                     break
                 time.sleep(0.05)
-                live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache))
+                live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
+                               palette=(palette_query, palette_cursor) if palette_open else None))
             if key is None:
                 continue
             msg = ""
             up = key.upper() if len(key) == 1 else key
             shifted = key.isalpha() and key.isupper()  # msvcrt returns upper when shift held
+
+            # ---- Slash command palette intercept ----
+            if palette_open:
+                rows_p = filter_palette(palette_query)
+                if key == "ESC":
+                    palette_open = False; palette_query = ""; palette_cursor = 0
+                elif key == "UP":
+                    if rows_p: palette_cursor = (palette_cursor - 1) % min(len(rows_p), 12)
+                elif key == "DOWN":
+                    if rows_p: palette_cursor = (palette_cursor + 1) % min(len(rows_p), 12)
+                elif key == "ENTER":
+                    if rows_p:
+                        cmd = rows_p[palette_cursor]
+                        palette_open = False; palette_query = ""; palette_cursor = 0
+                        action = cmd["action"]
+                        if action == "view:analyze-fs":
+                            scanner = Scanner(whitelist=whitelist, profile="idle")
+                            threading.Thread(target=scanner.run, daemon=True).start()
+                            view_stack = [View(title=f"Analyze · {analyze_start}", kind="items",
+                                               category=build_fs_category(analyze_start))]; cursor = 0
+                        elif action == "view:cats":
+                            scanner = Scanner(whitelist=whitelist, profile="full")
+                            threading.Thread(target=scanner.run, daemon=True).start()
+                            view_stack = [View(title="Analyze Categories", kind="cats")]; cursor = 0
+                        elif action == "view:purge":
+                            scanner = Scanner(whitelist=whitelist, profile="purge")
+                            threading.Thread(target=scanner.run, daemon=True).start()
+                            view_stack = [View(title="Purge Artifacts", kind="cats")]; cursor = 0
+                        elif action == "view:installers":
+                            scanner = Scanner(whitelist=whitelist, profile="installers")
+                            threading.Thread(target=scanner.run, daemon=True).start()
+                            view_stack = [View(title="Installers", kind="cats")]; cursor = 0
+                        elif action == "view:uninstall":
+                            if not apps_cache: apps_cache = list_installed_apps()
+                            view_stack = [View(title="Uninstall", kind="uninstall")]; cursor = 0
+                        elif action == "view:optimize":
+                            view_stack = [View(title="Optimize", kind="optimize")]; cursor = 0
+                        elif action == "view:status":
+                            view_stack = [View(title="Status", kind="status")]; cursor = 0
+                        elif action == "view:help":
+                            view_stack.append(View(title=T("title_help"), kind="help")); cursor = 0
+                        elif action == "exec:ports":
+                            # Surface a quick snapshot via the status line; full mgmt in CLI.
+                            try:
+                                rows_pp = list_dev_ports()
+                                msg = f"{len(rows_pp)} listening dev port(s) — manage with: wmole ports --kill <port>"
+                            except Exception as e:
+                                msg = f"ports query failed: {e}"
+                        elif action == "exec:update":
+                            msg = "running update check — see terminal output"
+                            try:
+                                cli_update(json_out=False, yes=False, dry_run=False)
+                            except Exception as e:
+                                msg = f"update failed: {e}"
+                        elif action == "exec:lang":
+                            set_lang("en" if LANG == "tr" else "tr")
+                            msg = T("lang_switched")
+                        elif action == "exec:permanent":
+                            use_trash = not use_trash
+                            msg = T("permanent_on") if not use_trash else T("permanent_off")
+                        elif action == "exec:quit":
+                            break
+                elif key == "BACKSPACE" or key == "\x08":
+                    palette_query = palette_query[:-1]
+                    palette_cursor = 0
+                elif key == "SPACE":
+                    palette_query += " "
+                    palette_cursor = 0
+                elif len(key) == 1 and key.isprintable() and key != "/":
+                    palette_query += key
+                    palette_cursor = 0
+                continue
+
+            # Open the palette from anywhere with "/"
+            if key == "/":
+                palette_open = True
+                palette_query = ""
+                palette_cursor = 0
+                continue
 
             if up == "Q":
                 if len(view_stack) > 1:
@@ -1827,6 +2140,13 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
             elif up == "K" and not shifted:
                 use_trash = not use_trash
                 msg = T("permanent_on") if not use_trash else T("permanent_off")
+            elif up == "H" and shifted:
+                # Open Help (Shift+H to avoid clashing with future single-key uses).
+                view_stack.append(View(title=T("title_help"), kind="help"))
+                cursor = 0
+            elif key == "?":
+                view_stack.append(View(title=T("title_help"), kind="help"))
+                cursor = 0
             elif key == "\\":
                 set_lang("en" if LANG == "tr" else "tr")
                 msg = T("lang_switched")
@@ -1857,7 +2177,8 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                             msg = "Cancelled."
                             continue
                     msg = f"Running: {act.title}…"
-                    live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache))
+                    live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
+                               palette=(palette_query, palette_cursor) if palette_open else None))
                     msg = run_optimize(act, dry_run=dry_run)
                 elif view.kind == "uninstall":
                     app = row

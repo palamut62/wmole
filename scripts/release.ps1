@@ -64,8 +64,12 @@ $Notes | Set-Content $notesPath -Encoding UTF8
 git tag -f $tag | Out-Null
 git push origin $tag --force | Out-Null
 
-$existing = gh release view $tag 2>$null
-if ($existing) {
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$null = gh release view $tag 2>&1
+$exists = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEAP
+if ($exists) {
   Write-Host "   release $tag exists; deleting before recreate"
   gh release delete $tag --yes --cleanup-tag | Out-Null
   git push origin $tag --force | Out-Null

@@ -1,4 +1,4 @@
-#ifndef MyAppName
+﻿#ifndef MyAppName
   #define MyAppName "wmole"
 #endif
 #ifndef MyAppVersion

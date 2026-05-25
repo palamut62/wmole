@@ -88,6 +88,10 @@ else:  # pragma: no cover
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+# ---------- Version ----------
+__version__ = "0.1.3"
+GITHUB_REPO = "palamut62/wmole"
+
 # ---------- Paths / helpers ----------
 USER = Path.home()
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", USER / "AppData" / "Local"))
@@ -2209,8 +2213,160 @@ def cli_optimize(dry_run: bool, json_out: bool) -> None:
             print(f"{row['title']}: {row['result']}")
 
 
-def cli_update(json_out: bool) -> None:
-    steps = []
+def _parse_semver(v: str) -> tuple:
+    """'v0.1.2' or '0.1.2' -> (0,1,2). Non-numeric chunks become -1."""
+    parts = v.strip().lstrip("vV").split("-", 1)[0].split(".")
+    out = []
+    for p in parts:
+        try:
+            out.append(int(p))
+        except ValueError:
+            out.append(-1)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out[:3])
+
+
+def fetch_latest_release(repo: str = GITHUB_REPO, timeout: float = 10.0) -> Optional[dict]:
+    """Return parsed GitHub latest-release JSON or None on failure."""
+    import urllib.request
+    import urllib.error
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"wmole/{__version__}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _pick_installer_asset(assets: List[dict]) -> Optional[dict]:
+    if not assets:
+        return None
+    for a in assets:
+        if re.search(r"setup\.exe$", a.get("name", ""), re.IGNORECASE):
+            return a
+    for a in assets:
+        if re.search(r"\.(exe|msi)$", a.get("name", ""), re.IGNORECASE):
+            return a
+    return assets[0]
+
+
+def _download(url: str, dest: Path, on_progress=None) -> None:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": f"wmole/{__version__}"})
+    with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
+        total = int(resp.headers.get("Content-Length") or 0)
+        read = 0
+        while True:
+            chunk = resp.read(64 * 1024)
+            if not chunk:
+                break
+            fh.write(chunk)
+            read += len(chunk)
+            if on_progress and total:
+                on_progress(read, total)
+
+
+def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None:
+    """Self-update.
+
+    - Frozen exe (PyInstaller install): check GitHub latest release, download
+      installer, run /VERYSILENT to upgrade in place.
+    - Source checkout: git pull + pip upgrade deps (legacy behavior).
+    """
+    is_frozen = bool(getattr(sys, "frozen", False))
+    steps: List[dict] = []
+
+    if is_frozen:
+        rel = fetch_latest_release()
+        if not rel:
+            steps.append({"step": "fetch-release", "code": 1,
+                          "output": "could not reach GitHub API"})
+            _emit_update(steps, json_out)
+            return
+        latest_tag = rel.get("tag_name", "")
+        latest_ver = _parse_semver(latest_tag)
+        current_ver = _parse_semver(__version__)
+        steps.append({"step": "check-version", "code": 0,
+                      "output": f"installed {__version__}, latest {latest_tag}"})
+        if latest_ver <= current_ver:
+            steps.append({"step": "decision", "code": 0,
+                          "output": "already up to date"})
+            _emit_update(steps, json_out)
+            return
+
+        asset = _pick_installer_asset(rel.get("assets", []))
+        if not asset:
+            steps.append({"step": "asset", "code": 1,
+                          "output": "no installer asset found in release"})
+            _emit_update(steps, json_out)
+            return
+        url = asset["browser_download_url"]
+        name = asset["name"]
+        steps.append({"step": "asset", "code": 0, "output": name})
+
+        if dry_run:
+            steps.append({"step": "download", "code": 0,
+                          "output": f"would download {url}"})
+            steps.append({"step": "install", "code": 0,
+                          "output": "would run /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"})
+            _emit_update(steps, json_out)
+            return
+
+        if not yes and not json_out:
+            try:
+                ans = input(f"Upgrade wmole {__version__} -> {latest_tag} now? [y/N] ").strip().lower()
+            except EOFError:
+                ans = ""
+            if ans not in ("y", "yes"):
+                steps.append({"step": "decision", "code": 1, "output": "user declined"})
+                _emit_update(steps, json_out)
+                return
+
+        dest = TEMP / name
+        try:
+            last_pct = [-1]
+            def _prog(read, total):
+                pct = int(read * 100 / total)
+                if pct != last_pct[0] and not json_out:
+                    last_pct[0] = pct
+                    sys.stdout.write(f"\rdownloading {name}: {pct:3d}%")
+                    sys.stdout.flush()
+            _download(url, dest, on_progress=_prog)
+            if not json_out:
+                sys.stdout.write("\n")
+            steps.append({"step": "download", "code": 0,
+                          "output": f"{dest} ({dest.stat().st_size} bytes)"})
+        except Exception as exc:
+            steps.append({"step": "download", "code": 1, "output": str(exc)})
+            _emit_update(steps, json_out)
+            return
+
+        # Launch installer detached so it can replace our own exe after we exit.
+        try:
+            DETACHED = 0x00000008  # DETACHED_PROCESS
+            subprocess.Popen(
+                [str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                creationflags=DETACHED if os.name == "nt" else 0,
+                close_fds=True,
+            )
+            steps.append({"step": "install", "code": 0,
+                          "output": "installer launched in background; exiting"})
+            log_operation("self_update", dest, dest.stat().st_size,
+                          f"{__version__} -> {latest_tag}")
+            _emit_update(steps, json_out)
+            # Exit so the installer can overwrite the running exe.
+            os._exit(0)
+        except Exception as exc:
+            steps.append({"step": "install", "code": 1, "output": str(exc)})
+            _emit_update(steps, json_out)
+            return
+
+    # Source checkout path (legacy)
     if path_exists(Path(".git")):
         r = subprocess.run(["git", "pull", "--ff-only"], capture_output=True, text=True, shell=False)
         steps.append({"step": "git-pull", "code": r.returncode, "output": (r.stdout or r.stderr).strip()})
@@ -2218,11 +2374,15 @@ def cli_update(json_out: bool) -> None:
         steps.append({"step": "git-pull", "code": 1, "output": "not a git repository"})
     r2 = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "rich", "send2trash", "psutil"], capture_output=True, text=True, shell=False)
     steps.append({"step": "pip-upgrade-deps", "code": r2.returncode, "output": (r2.stdout or r2.stderr).strip()[-500:]})
+    _emit_update(steps, json_out)
+
+
+def _emit_update(steps: List[dict], json_out: bool) -> None:
     if json_out:
         print(json.dumps({"steps": steps}, indent=2))
     else:
         for s in steps:
-            print(f"{s['step']}: exit {s['code']}")
+            print(f"{s['step']}: exit {s['code']}  {s['output']}")
 
 
 def cli_remove(dry_run: bool, json_out: bool) -> None:
@@ -2429,6 +2589,7 @@ def main_cli() -> None:
     p.add_argument("--whitelist", default=str(WHITELIST_FILE), help="whitelist file path")
     p.add_argument("--shell", default="powershell", help="completion shell")
     p.add_argument("--install", action="store_true", help="install completion script under ~/.wmole")
+    p.add_argument("--yes", "-y", action="store_true", help="auto-confirm prompts (e.g. self-update)")
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
     args = p.parse_args()
@@ -2487,7 +2648,7 @@ def main_cli() -> None:
     elif args.mode == "uninstall" and args.json_out:
         cli_uninstall(json_out=True, query=args.query, limit=args.limit, include_leftovers=args.leftovers)
     elif args.mode == "update":
-        cli_update(json_out=args.json_out)
+        cli_update(json_out=args.json_out, yes=args.yes, dry_run=args.dry_run)
     elif args.mode == "remove":
         cli_remove(dry_run=args.dry_run, json_out=args.json_out)
     elif args.mode == "completion":

@@ -1,10 +1,12 @@
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import mole
+from rich.console import Console
 
 
 class WmoleBehaviorTests(unittest.TestCase):
@@ -166,6 +168,48 @@ class WmoleBehaviorTests(unittest.TestCase):
         filtered = mole.filter_apps(apps, query="git", limit=1)
 
         self.assertEqual(filtered, [apps[1]])
+
+    def test_palette_contains_only_operation_access_commands(self):
+        with mock.patch.object(mole, "LANG", "en"):
+            names = [cmd["name"] for cmd in mole.palette_commands()]
+
+        self.assertEqual(
+            names,
+            [
+                "analyze",
+                "categories",
+                "purge",
+                "installers",
+                "uninstall",
+                "optimize",
+                "status",
+                "ports",
+                "update",
+                "help",
+            ],
+        )
+        self.assertEqual(mole.filter_palette("/permanent"), [])
+        self.assertEqual(mole.filter_palette("/quit"), [])
+
+    def test_command_input_is_visible_when_palette_is_idle(self):
+        output = io.StringIO()
+        console = Console(record=True, width=100, color_system=None, file=output)
+        with mock.patch.object(mole, "LANG", "en"):
+            console.print(mole.render_command_input())
+
+        rendered = console.export_text()
+        self.assertIn("Type / to open operations", rendered)
+
+    def test_help_and_footer_do_not_advertise_top_level_mode_hotkeys(self):
+        with mock.patch.object(mole, "LANG", "en"):
+            help_text = "\n".join(
+                line for _, lines in mole._help_sections_en() for line in lines
+            )
+            footer_text = "\n".join(mole.build_footer_lines(160))
+
+        self.assertIn("/analyze", help_text)
+        self.assertNotIn("Shift+A", help_text)
+        self.assertNotIn("A Analyze(FS)", footer_text)
 
     def test_parse_paths_arg_supports_semicolon_and_comma(self):
         paths = mole.parse_paths_arg(r"C:\A;C:\B, C:\C")

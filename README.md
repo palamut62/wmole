@@ -29,7 +29,7 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 10. [Status and Telemetry](#status-and-telemetry)
 11. [Optimize Actions](#optimize-actions)
 12. [Uninstall and Leftovers](#uninstall-and-leftovers)
-13. [Keyboard Shortcuts](#keyboard-shortcuts)
+13. [Command Input And Context Keys](#command-input-and-context-keys)
 14. [Testing](#testing)
 15. [Roadmap](#roadmap)
 
@@ -42,6 +42,7 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 - Smart uninstall helper with fuzzy leftover detection (filesystem + registry key candidates).
 - Optimize mode with dry-run support, admin/high-risk labeling, and high-risk confirmation.
 - Rich status dashboard and JSON status output with device/power/uptime/network/disk stats.
+- Persistent `/` command input for operation-first TUI navigation.
 
 ## Command Set
 
@@ -73,7 +74,7 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 ## Safety Model
 
 - Default delete mode is recycle-bin (`send2trash`).
-- Permanent delete requires `Shift+D` in TUI.
+- Permanent delete requires explicitly enabling permanent mode with `K` in TUI.
 - `--dry-run` supported for destructive CLI flows.
 - Protected paths blocked, including:
   - drive roots
@@ -185,14 +186,15 @@ Uninstall inventory includes:
 
 Leftover candidates are shown automatically after uninstall launch and can also be queried via JSON (`--leftovers`).
 
-## Keyboard Shortcuts
+## Command Input And Context Keys
 
 ```text
-Up/Down move | Enter open/run | Space pick | D delete | Shift+D permanent
-T dry-run | R refresh | O open in Explorer | L scan uninstall leftovers
-G large files | V drives
-Modes: Shift+A Analyze(FS) | Shift+C Analyze(Categories) | Shift+P Purge | Shift+I Installers | Shift+U Uninstall | Shift+M Optimize | Shift+S Status
-Esc/Q back
+Type / in the visible input line, filter with text, choose with Up/Down, and run with Enter.
+Operations: /analyze | /categories | /purge | /installers | /uninstall
+            /optimize | /status | /ports | /update | /help
+Context keys: Up/Down move | Enter open/run | Space pick | D delete | K permanent mode
+              R refresh | O open in Explorer | L scan uninstall leftovers
+              G large files | V drives | Esc/Q back
 ```
 
 ## Testing

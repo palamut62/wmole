@@ -1,5 +1,6 @@
 import json
 import io
+import contextlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -259,6 +260,25 @@ class WmoleBehaviorTests(unittest.TestCase):
         self.assertIsNotNone(last_command_row)
         self.assertLess(first_command_row, test_console.height)
         self.assertLess(last_command_row, test_console.height)
+
+    def test_disabling_auto_update_does_not_start_background_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_dir = Path(td) / ".wmole"
+            config_file = state_dir / "config.json"
+            stdout = io.StringIO()
+            with (
+                mock.patch("sys.argv", ["wmole", "update", "--disable-auto", "--json"]),
+                mock.patch.object(mole, "WMOLE_DIR", state_dir),
+                mock.patch.object(mole, "CONFIG_FILE", config_file),
+                mock.patch.object(mole, "load_config", return_value={}),
+                mock.patch.object(mole, "load_whitelist", return_value=[]),
+                mock.patch.object(mole, "start_auto_update_check") as start_check,
+                contextlib.redirect_stdout(stdout),
+            ):
+                mole.main_cli()
+
+        start_check.assert_not_called()
+        self.assertFalse(json.loads(stdout.getvalue())["auto_update"])
 
     def test_parse_paths_arg_supports_semicolon_and_comma(self):
         paths = mole.parse_paths_arg(r"C:\A;C:\B, C:\C")

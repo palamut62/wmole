@@ -89,7 +89,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -3017,9 +3017,6 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
 
 
 def main_cli() -> None:
-    # Fire-and-forget background update check; safe no-op in dev/source mode
-    # or when WMOLE_NO_AUTO_UPDATE is set.
-    start_auto_update_check()
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
                    choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports"])
@@ -3039,6 +3036,11 @@ def main_cli() -> None:
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
     args = p.parse_args()
+
+    # Do not start a final background check while the user is disabling it.
+    # Other commands preserve the fire-and-forget startup behavior.
+    if not (args.mode == "update" and args.disable_auto):
+        start_auto_update_check()
 
     target_paths = [Path(t).expanduser() for t in args.targets]
     override_paths = parse_paths_arg(args.paths)

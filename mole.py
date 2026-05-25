@@ -37,6 +37,8 @@ from typing import Dict, List, Optional
 from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
+from rich.panel import Panel
+from rich.align import Align
 
 try:
     from send2trash import send2trash
@@ -143,6 +145,115 @@ def dir_size(path: Path, on_progress=None, max_seconds: Optional[float] = None,
     if on_progress:
         on_progress(total)
     return total
+
+
+# ---------- i18n ----------
+STRINGS: Dict[str, Dict[str, str]] = {
+    "tr": {
+        "title_analyze":    "Disk Analizi",
+        "title_inside":     "İçinde · {name}",
+        "title_status":     "Sistem Durumu",
+        "title_optimize":   "Sistem Optimize",
+        "title_uninstall":  "Programları Kaldır",
+        "free_suffix":      "({free:.1f} GB boş)",
+        "mode_trash":       "🗑 Geri Dönüşüm Kutusu",
+        "mode_permanent":   "⚠ KALICI MOD",
+        "mode_dry_run":     "KURU ÇALIŞTIRMA",
+        "hint_cats":        "Temizlenecek kategorileri seç — [Boşluk] işaretle, [D] seçilenleri sil, [K] kalıcı mod, [\\] dil",
+        "hint_items":       "İçinde {name} — [Boşluk] işaretle, [D] sil",
+        "hint_fs":          "[Enter] klasörü aç  ·  [G] büyük dosyalar  ·  [V] sürücüler  ·  [O] Explorer  ·  [Boşluk]/[D] sil",
+        "hint_status":      "Canlı sistem durumu (otomatik yenilenir) — [Q]/[Esc] geri",
+        "hint_optimize":    "Optimize işlemleri — [Enter] çalıştır (yönetici gerekebilir)",
+        "hint_uninstall":   "Kurulu programlar — [Enter] kaldır, [L] artıklar",
+        "confirm_header":   "Aşağıdaki {n} öğe {action} ({size}).",
+        "confirm_keys":     "[Enter] onayla   ·   [Esc] iptal",
+        "and_more":         "  … ve {n} öğe daha",
+        "protected_header": "⛔ Atlanacak (korumalı) {n} öğe:",
+        "act_trash":        "Geri Dönüşüm Kutusu'na taşınacak",
+        "act_permanent":    "KALICI olarak silinecek",
+        "act_dry_run":      "Kuru çalıştırma · silmiş gibi yapılacak",
+        "done_ok":          "✅ {n} öğe taşındı · {size} kazanıldı",
+        "done_perm":        "✅ {n} öğe kalıcı silindi · {size} kazanıldı",
+        "done_dry":         "ℹ Kuru çalıştırma · {n} öğe ({size}) silinecekti, hiçbir şey değişmedi",
+        "done_errs":        "  ({n} hata)",
+        "cancelled":        "Silme iptal edildi (Enter dışında bir tuşa basıldı).",
+        "confirm_title":    "  SİLME ONAYI  ",
+        "nothing_selected": "Hiçbir şey seçilmedi.",
+        "permanent_on":     "⚠ KALICI MOD AÇIK — sonraki silme geri alınamaz!",
+        "permanent_off":    "Güvenli mod (Geri Dönüşüm Kutusu).",
+        "lang_switched":    "Dil: Türkçe",
+        "footer_more":      "↑ üstte {n} öğe daha",
+        "footer_less":      "↓ altta {n} öğe daha",
+    },
+    "en": {
+        "title_analyze":    "Analyze Disk",
+        "title_inside":     "Inside · {name}",
+        "title_status":     "System Status",
+        "title_optimize":   "System Optimize",
+        "title_uninstall":  "Uninstall Programs",
+        "free_suffix":      "({free:.1f} GB free)",
+        "mode_trash":       "🗑 Recycle Bin",
+        "mode_permanent":   "⚠ PERMANENT MODE",
+        "mode_dry_run":     "DRY-RUN",
+        "hint_cats":        "Select cleanable categories — [Space] pick, [D] delete selected, [K] permanent, [\\] lang",
+        "hint_items":       "Inside {name} — [Space] pick, [D] delete",
+        "hint_fs":          "[Enter] open  ·  [G] large files  ·  [V] drives  ·  [O] Explorer  ·  [Space]/[D] delete",
+        "hint_status":      "Live system status (auto-refresh) — [Q]/[Esc] back",
+        "hint_optimize":    "Optimize actions — [Enter] run (admin may be required)",
+        "hint_uninstall":   "Installed programs — [Enter] uninstall, [L] leftovers",
+        "confirm_header":   "The following {n} item(s) will be {action} ({size}).",
+        "confirm_keys":     "[Enter] confirm   ·   [Esc] cancel",
+        "and_more":         "  … and {n} more",
+        "protected_header": "⛔ Protected — will be skipped ({n}):",
+        "act_trash":        "moved to the Recycle Bin",
+        "act_permanent":    "PERMANENTLY DELETED",
+        "act_dry_run":      "dry-run · nothing will change",
+        "done_ok":          "✅ {n} item(s) moved · {size} reclaimed",
+        "done_perm":        "✅ {n} item(s) permanently deleted · {size} reclaimed",
+        "done_dry":         "ℹ Dry-run · would delete {n} item(s) ({size}), nothing changed",
+        "done_errs":        "  ({n} error(s))",
+        "cancelled":        "Delete cancelled (a key other than Enter was pressed).",
+        "confirm_title":    "  DELETE CONFIRMATION  ",
+        "nothing_selected": "Nothing selected.",
+        "permanent_on":     "⚠ PERMANENT MODE ON — next delete cannot be undone!",
+        "permanent_off":    "Safe mode (Recycle Bin).",
+        "lang_switched":    "Language: English",
+        "footer_more":      "↑ {n} more above",
+        "footer_less":      "↓ {n} more below",
+    },
+}
+def _initial_lang() -> str:
+    env = os.environ.get("WMOLE_LANG", "").lower()
+    if env in STRINGS:
+        return env
+    try:
+        raw = CONFIG_FILE.read_text(encoding="utf-8") if CONFIG_FILE.exists() else "{}"
+        v = (json.loads(raw) or {}).get("lang", "")
+        if v in STRINGS:
+            return v
+    except Exception:
+        pass
+    return "tr"
+
+
+LANG: str = _initial_lang()
+
+
+def T(key: str, **kw) -> str:
+    s = STRINGS.get(LANG, STRINGS["tr"]).get(key) or STRINGS["en"].get(key, key)
+    return s.format(**kw) if kw else s
+
+
+def set_lang(code: str) -> None:
+    global LANG
+    if code in STRINGS:
+        LANG = code
+        try:
+            cfg = load_config()
+            cfg["lang"] = code
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def path_exists(path: Path) -> bool:
@@ -1299,19 +1410,33 @@ def _wrap_tokens(tokens: List[str], width: int, prefix: str = "") -> List[str]:
 
 
 def build_footer_lines(width: int) -> List[str]:
-    main = [
-        "Up/Down",
-        "Enter",
-        "Space",
-        "D",
-        "Shift+D",
-        "T Dry-run",
-        "R Refresh",
-        "O Open",
-        "L Leftovers",
-        "G Large",
-        "V Drives",
-    ]
+    main = (
+        [
+            "↑/↓",
+            "Enter",
+            "Boşluk Seç",
+            "D Sil",
+            "K Kalıcı Mod",
+            "R Yenile",
+            "O Aç",
+            "L Artıklar",
+            "G Büyük",
+            "V Sürücüler",
+            "\\ TR/EN",
+        ] if LANG == "tr" else [
+            "Up/Down",
+            "Enter",
+            "Space Pick",
+            "D Delete",
+            "K Permanent",
+            "R Refresh",
+            "O Open",
+            "L Leftovers",
+            "G Large",
+            "V Drives",
+            "\\ TR/EN",
+        ]
+    )
     modes = [
         "A Analyze(FS)",
         "C Analyze(Cats)",
@@ -1351,33 +1476,34 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
 
     # Top banner — title reflects the current view
     title = {
-        "cats":      "Analyze Disk",
-        "items":     f"Inside · {view.category.title}" if view.category else "Analyze Disk",
-        "status":    "System Status",
-        "optimize":  "System Optimize",
-        "uninstall": "Uninstall Programs",
+        "cats":      T("title_analyze"),
+        "items":     T("title_inside", name=view.category.title) if view.category else T("title_analyze"),
+        "status":    T("title_status"),
+        "optimize":  T("title_optimize"),
+        "uninstall": T("title_uninstall"),
     }.get(view.kind, "wmole")
+    permanent_mode = not use_trash
     header = Text()
-    header.append(title, style="bold magenta")
-    header.append(f"  ({total_free:.1f} GB free)", style="grey62")
-    mode_tags = []
-    mode_tags.append("🗑 Trash" if use_trash else "⚠ Permanent")
-    if dry_run: mode_tags.append("DRY-RUN")
-    header.append("   " + "  ".join(mode_tags), style="bold yellow" if dry_run else "grey70")
+    header.append(title, style="bold red" if permanent_mode else "bold magenta")
+    header.append("  " + T("free_suffix", free=total_free), style="grey62")
+    mode_tags = [T("mode_permanent") if permanent_mode else T("mode_trash")]
+    if dry_run: mode_tags.append(T("mode_dry_run"))
+    tag_style = "bold red on grey15" if permanent_mode else ("bold yellow" if dry_run else "grey70")
+    header.append("   " + "  ".join(mode_tags), style=tag_style)
     header.append("\n")
     if view.kind == "cats":
-        header.append("Select cleanable categories — Space picks, D deletes selected", style="grey70")
+        header.append(T("hint_cats"), style="grey70")
     elif view.kind == "items":
         if view.category and view.category.key.startswith("fs:"):
-            header.append("Enter open folder  ·  G large files  ·  V drives  ·  O open in Explorer  ·  Space/D delete", style="grey70")
+            header.append(T("hint_fs"), style="grey70")
         else:
-            header.append(f"Inside  {view.category.title}  — Space picks, D deletes selected", style="grey70")
+            header.append(T("hint_items", name=view.category.title if view.category else ""), style="grey70")
     elif view.kind == "status":
-        header.append("Live system status (auto-refresh) — Q/Esc back", style="grey70")
+        header.append(T("hint_status"), style="grey70")
     elif view.kind == "optimize":
-        header.append("System optimize actions — Enter to run (admin may be required)", style="grey70")
+        header.append(T("hint_optimize"), style="grey70")
     elif view.kind == "uninstall":
-        header.append("Installed programs — Enter launches uninstaller, L scans leftovers", style="grey70")
+        header.append(T("hint_uninstall"), style="grey70")
 
     # Body
     if view.kind == "status":
@@ -1412,7 +1538,7 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
         rows_shown = end - start
 
         body = Text("\n")
-        body.append((f"      ↑ {start} more above\n" if start > 0 else "\n"), style="grey42")
+        body.append(("      " + T("footer_more", n=start) + "\n" if start > 0 else "\n"), style="grey42")
 
         for i, row in enumerate(rows):
             if i < start or i >= end:
@@ -1501,7 +1627,7 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
 
         for _ in range(avail - rows_shown):
             body.append("\n")
-        body.append((f"      ↓ {len(rows) - end} more below\n" if end < len(rows) else "\n"), style="grey42")
+        body.append(("      " + T("footer_less", n=len(rows) - end) + "\n" if end < len(rows) else "\n"), style="grey42")
 
     # Status / message lines (fixed 2)
     status = Text()
@@ -1525,6 +1651,7 @@ def open_in_explorer(p: Path) -> None:
 def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
                    use_trash: bool, dry_run: bool, apps: List[dict],
                    opt: List[dict]) -> str:
+    # Collect selected items, partitioned into protected (blocked) and deletable.
     candidates: List[Item] = []
     if view.kind == "items" and view.category is not None:
         for it in view.category.items:
@@ -1535,25 +1662,59 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
             for it in cat.items:
                 if it.selected and not it.deleted:
                     candidates.append(it)
-    targets = [it for it in candidates if not is_protected_path(it.path)]
-    blocked = len(candidates) - len(targets)
+    protected = [it for it in candidates if is_protected_path(it.path)]
+    targets   = [it for it in candidates if not is_protected_path(it.path)]
     if not targets:
-        return "Nothing selected." if not blocked else f"{blocked} protected item(s) skipped."
-    total = sum(t.size for t in targets)
-    verb = "DRY-RUN: would delete" if dry_run else ("Move to Recycle Bin" if use_trash else "PERMANENTLY DELETE")
+        return T("nothing_selected") if not protected else T("protected_header", n=len(protected))
 
-    prompt = Text()
-    prompt.append("  ⚠ ", style="bold red")
-    prompt.append(f"{verb}  {len(targets)} item(s)", style="bold yellow")
-    prompt.append(f"  totaling {human_size(total)} ?  [Y / anything = cancel]", style="grey70")
-    live.update(Group(render(scanner, view, cursor, "", use_trash, dry_run, apps, opt), prompt))
-    if read_key().upper() != "Y":
-        return "Cancelled."
+    total = sum(t.size for t in targets)
+    if dry_run:    action_label = T("act_dry_run")
+    elif use_trash: action_label = T("act_trash")
+    else:           action_label = T("act_permanent")
+
+    # Build a scrollable preview: first 10 paths, then "and N more".
+    danger = (not use_trash) and (not dry_run)
+    border_color = "red" if danger else ("yellow" if dry_run else "cyan")
+    body_txt = Text()
+    body_txt.append(T("confirm_header", n=len(targets), action=action_label, size=human_size(total)),
+                    style="bold red" if danger else "bold yellow")
+    body_txt.append("\n\n")
+    preview_n = 10
+    for it in targets[:preview_n]:
+        disp = str(it.path)
+        if len(disp) > 70:
+            disp = "…" + disp[-69:]
+        body_txt.append(f"  • {disp}", style="white")
+        body_txt.append(f"   {human_size(it.size)}\n", style="grey50")
+    if len(targets) > preview_n:
+        body_txt.append(T("and_more", n=len(targets) - preview_n) + "\n", style="grey50")
+    if protected:
+        body_txt.append("\n" + T("protected_header", n=len(protected)) + "\n", style="bold grey62")
+        for it in protected[:5]:
+            disp = str(it.path)
+            if len(disp) > 70:
+                disp = "…" + disp[-69:]
+            body_txt.append(f"  ⛔ {disp}\n", style="grey42")
+        if len(protected) > 5:
+            body_txt.append(T("and_more", n=len(protected) - 5) + "\n", style="grey42")
+    body_txt.append("\n" + T("confirm_keys"), style="bold red" if danger else "bold cyan")
+
+    modal = Panel(
+        Align.center(body_txt, vertical="top"),
+        title=T("confirm_title"),
+        title_align="center",
+        border_style=border_color,
+        padding=(1, 2),
+    )
+    live.update(modal)
+    key = read_key()
+    if key != "ENTER":
+        return T("cancelled")
 
     ok = err = 0
     for it in targets:
         live.update(Group(render(scanner, view, cursor, "", use_trash, dry_run, apps, opt),
-                          Text(f"  {'would delete' if dry_run else 'deleting'} {it.path} …", style="yellow")))
+                          Text(f"  · {it.path}", style="yellow")))
         e = delete_path(it.path, use_trash=use_trash, dry_run=dry_run)
         if e is None:
             if not dry_run:
@@ -1563,9 +1724,15 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
         else:
             it.error = e
             err += 1
-    suffix = " (dry-run, nothing removed)" if dry_run else ""
-    blocked_note = f" {blocked} protected skipped." if blocked else ""
-    return f"{verb}: {ok} ok, {err} errors. ~{human_size(total)}.{suffix}{blocked_note}"
+    if dry_run:
+        msg = T("done_dry", n=ok, size=human_size(total))
+    elif use_trash:
+        msg = T("done_ok", n=ok, size=human_size(total))
+    else:
+        msg = T("done_perm", n=ok, size=human_size(total))
+    if err:
+        msg += T("done_errs", n=err)
+    return msg
 
 
 # ---------- Main loop ----------
@@ -1650,9 +1817,12 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                 if rows: cursor = (cursor - 1) % len(rows)
             elif up == "DOWN":
                 if rows: cursor = (cursor + 1) % len(rows)
-            elif up == "T":
-                dry_run = not dry_run
-                msg = f"Dry-run {'ON' if dry_run else 'OFF'}."
+            elif up == "K" and not shifted:
+                use_trash = not use_trash
+                msg = T("permanent_on") if not use_trash else T("permanent_off")
+            elif key == "\\":
+                set_lang("en" if LANG == "tr" else "tr")
+                msg = T("lang_switched")
             elif up == "ENTER":
                 if not rows: continue
                 row = rows[cursor]
@@ -1770,9 +1940,9 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                 else:
                     msg = f"No obvious file leftovers. Registry candidates: {len(reg_leftovers)}."
             elif up == "D" and view.kind in ("cats", "items"):
-                permanent = shifted     # Shift+D = permanent
+                # `D` honors the current trash/permanent toggle (K). No more Shift+D.
                 msg = confirm_delete(live, scanner, view, cursor,
-                                     use_trash=(not permanent) and use_trash,
+                                     use_trash=use_trash,
                                      dry_run=dry_run, apps=apps_cache, opt=opt_cache)
             elif up == "R":
                 if view.kind in ("cats", "items"):

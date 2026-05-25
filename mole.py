@@ -89,8 +89,9 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 GITHUB_REPO = "palamut62/wmole"
+AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
 # ---------- Paths / helpers ----------
 USER = Path.home()
@@ -105,6 +106,8 @@ DENYLIST_FILE = WMOLE_DIR / "denylist.txt"
 COMPLETION_FILE = WMOLE_DIR / "completion.ps1"
 LOG_DIR = WMOLE_DIR / "logs"
 OP_LOG_FILE = LOG_DIR / "operations.log"
+UPDATE_CHECK_FILE = WMOLE_DIR / "update_check.json"
+PENDING_UPDATE_FILE = WMOLE_DIR / "pending_update.json"
 
 
 def human_size(n: int) -> str:
@@ -2377,6 +2380,152 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False) -> None
     _emit_update(steps, json_out)
 
 
+# ---------- Background auto-update (Claude Code style) ----------
+def _auto_update_disabled() -> bool:
+    if os.environ.get("WMOLE_NO_AUTO_UPDATE", "").strip() not in ("", "0", "false", "False"):
+        return True
+    try:
+        cfg = load_config()
+        if cfg.get("auto_update") is False:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _auto_update_worker() -> None:
+    """Background: throttle, check latest release, pre-download installer."""
+    try:
+        if _auto_update_disabled():
+            return
+        # Throttle: only hit GitHub once per AUTO_UPDATE_INTERVAL.
+        last = 0.0
+        if UPDATE_CHECK_FILE.exists():
+            try:
+                last = float(json.loads(UPDATE_CHECK_FILE.read_text(encoding="utf-8")).get("ts", 0))
+            except Exception:
+                last = 0.0
+        if time.time() - last < AUTO_UPDATE_INTERVAL:
+            return
+
+        rel = fetch_latest_release(timeout=5.0)
+        try:
+            WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+            UPDATE_CHECK_FILE.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
+        except Exception:
+            pass
+        if not rel:
+            return
+
+        latest_tag = rel.get("tag_name", "")
+        if _parse_semver(latest_tag) <= _parse_semver(__version__):
+            # Up to date — clear any stale pending file.
+            try:
+                if PENDING_UPDATE_FILE.exists():
+                    PENDING_UPDATE_FILE.unlink()
+            except Exception:
+                pass
+            return
+
+        asset = _pick_installer_asset(rel.get("assets", []))
+        if not asset:
+            return
+        expected_size = int(asset.get("size") or 0)
+        dest = TEMP / asset["name"]
+
+        # Skip download if we already have this exact installer staged.
+        if PENDING_UPDATE_FILE.exists():
+            try:
+                cur = json.loads(PENDING_UPDATE_FILE.read_text(encoding="utf-8"))
+                cur_path = Path(cur.get("path", ""))
+                if (cur.get("version") == latest_tag and cur_path.exists()
+                        and (expected_size == 0 or cur_path.stat().st_size == expected_size)):
+                    return
+            except Exception:
+                pass
+
+        if dest.exists() and expected_size and dest.stat().st_size == expected_size:
+            pass  # already fully downloaded
+        else:
+            try:
+                _download(asset["browser_download_url"], dest)
+            except Exception:
+                return
+
+        try:
+            PENDING_UPDATE_FILE.write_text(json.dumps({
+                "version": latest_tag,
+                "path": str(dest),
+                "downloaded_at": time.time(),
+                "from_version": __version__,
+            }), encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        # Auto-update must never crash the host process.
+        pass
+
+
+def start_auto_update_check() -> None:
+    """Kick off background update check. No-op outside frozen builds."""
+    if not getattr(sys, "frozen", False):
+        return
+    if _auto_update_disabled():
+        return
+    try:
+        t = threading.Thread(target=_auto_update_worker, name="wmole-autoupdate", daemon=True)
+        t.start()
+    except Exception:
+        pass
+
+
+def apply_pending_update() -> bool:
+    """If a staged installer for a newer version exists, launch it detached.
+
+    Returns True if an installer was launched (caller should exit promptly so
+    the installer can replace the running exe).
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    if _auto_update_disabled():
+        return False
+    try:
+        if not PENDING_UPDATE_FILE.exists():
+            return False
+        info = json.loads(PENDING_UPDATE_FILE.read_text(encoding="utf-8"))
+        ver_tag = info.get("version", "")
+        if _parse_semver(ver_tag) <= _parse_semver(__version__):
+            PENDING_UPDATE_FILE.unlink(missing_ok=True)  # type: ignore[arg-type]
+            return False
+        path = Path(info.get("path", ""))
+        if not path.exists():
+            PENDING_UPDATE_FILE.unlink(missing_ok=True)  # type: ignore[arg-type]
+            return False
+        DETACHED = 0x00000008  # DETACHED_PROCESS
+        subprocess.Popen(
+            [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            creationflags=DETACHED if os.name == "nt" else 0,
+            close_fds=True,
+        )
+        try:
+            log_operation("auto_update", path, path.stat().st_size,
+                          f"{__version__} -> {ver_tag}")
+        except Exception:
+            pass
+        try:
+            PENDING_UPDATE_FILE.unlink()
+        except Exception:
+            pass
+        # One quiet line on the way out, like Claude Code's "Updated to X".
+        try:
+            sys.stderr.write(f"\n(wmole: installing update {ver_tag} in background)\n")
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def _emit_update(steps: List[dict], json_out: bool) -> None:
     if json_out:
         print(json.dumps({"steps": steps}, indent=2))
@@ -2576,6 +2725,9 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
 
 
 def main_cli() -> None:
+    # Fire-and-forget background update check; safe no-op in dev/source mode
+    # or when WMOLE_NO_AUTO_UPDATE is set.
+    start_auto_update_check()
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
                    choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports"])
@@ -2590,6 +2742,8 @@ def main_cli() -> None:
     p.add_argument("--shell", default="powershell", help="completion shell")
     p.add_argument("--install", action="store_true", help="install completion script under ~/.wmole")
     p.add_argument("--yes", "-y", action="store_true", help="auto-confirm prompts (e.g. self-update)")
+    p.add_argument("--disable-auto", action="store_true", help="update mode: turn off background auto-update")
+    p.add_argument("--enable-auto", action="store_true", help="update mode: turn background auto-update back on")
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
     args = p.parse_args()
@@ -2648,6 +2802,19 @@ def main_cli() -> None:
     elif args.mode == "uninstall" and args.json_out:
         cli_uninstall(json_out=True, query=args.query, limit=args.limit, include_leftovers=args.leftovers)
     elif args.mode == "update":
+        if args.disable_auto or args.enable_auto:
+            try:
+                cfg = load_config()
+                cfg["auto_update"] = not args.disable_auto
+                WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+                CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                state = "enabled" if cfg["auto_update"] else "disabled"
+                msg = f"background auto-update {state}"
+                print(json.dumps({"auto_update": cfg["auto_update"]}, indent=2)
+                      if args.json_out else msg)
+            except Exception as exc:
+                print(f"failed to update config: {exc}")
+            return
         cli_update(json_out=args.json_out, yes=args.yes, dry_run=args.dry_run)
     elif args.mode == "remove":
         cli_remove(dry_run=args.dry_run, json_out=args.json_out)
@@ -2665,3 +2832,10 @@ if __name__ == "__main__":
         main_cli()
     except KeyboardInterrupt:
         pass
+    finally:
+        # If a newer installer is staged, fire it detached on the way out so it
+        # can replace this exe. Silent no-op in dev/source mode.
+        try:
+            apply_pending_update()
+        except Exception:
+            pass

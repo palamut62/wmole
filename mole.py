@@ -89,7 +89,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -1666,20 +1666,24 @@ def filter_palette(query: str) -> List[dict]:
     return [c for c in cmds if q in c["name"].lower() or q in c["desc"].lower()]
 
 
-def render_palette(query: str, cursor: int) -> Panel:
+def render_palette(query: str, cursor: int, max_rows: int = 12) -> Panel:
     rows = filter_palette(query)
     if not rows:
         body = Text("  (no matching command)\n", style="grey50")
     else:
-        page_start = max(0, min(cursor - 11, len(rows) - 12))
-        visible_rows = rows[page_start:page_start + 12]
+        page_start = max(0, min(cursor - (max_rows - 1), len(rows) - max_rows))
+        visible_rows = rows[page_start:page_start + max_rows]
         body = Text()
         for offset, c in enumerate(visible_rows):
             i = page_start + offset
-            marker = "▶ " if i == cursor else "  "
-            style = "bright_cyan" if i == cursor else "white"
-            body.append(f"  {marker}/{c['name']:<12}", style=style)
-            body.append(f"  {c['desc']}\n", style="grey62" if i != cursor else "grey78")
+            if i == cursor:
+                body.append(
+                    f"  > /{c['name']:<12}  {c['desc']}\n",
+                    style="bold black on bright_cyan",
+                )
+            else:
+                body.append(f"    /{c['name']:<12}", style="white")
+                body.append(f"  {c['desc']}\n", style="grey62")
     header = Text()
     header.append(" / ", style="bold magenta on grey15")
     header.append(query, style="bold white")
@@ -1700,9 +1704,14 @@ def render_command_input() -> Panel:
     return Panel(line, border_style="grey35", padding=(0, 1))
 
 
-def palette_extra_height(query: str) -> int:
+def palette_visible_rows(terminal_height: int) -> int:
+    """Use available height for the menu when its frame is open."""
+    return max(1, min(12, terminal_height - 20))
+
+
+def palette_extra_height(query: str, max_rows: int = 12) -> int:
     """Rows consumed beyond the idle command input when results are open."""
-    return min(len(filter_palette(query)), 12) + 5
+    return min(len(filter_palette(query)), max_rows) + 5
 
 
 def format_tui_update_status(status: str) -> str:
@@ -1811,9 +1820,11 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
         total = sum(sizes) or 1
         max_pct = max((s / total * 100 for s in sizes), default=1)
 
-        palette_rows = palette_extra_height(palette[0]) if palette is not None else 0
+        palette_limit = palette_visible_rows(console.size.height or 30) if palette is not None else 12
+        palette_rows = palette_extra_height(palette[0], palette_limit) if palette is not None else 0
         reserved = 12 + len(footer_lines) + palette_rows
-        avail = max(5, (console.size.height or 30) - reserved)
+        min_body_rows = 1 if palette is not None else 5
+        avail = max(min_body_rows, (console.size.height or 30) - reserved)
         if len(rows) > avail:
             start = max(0, min(cursor - avail // 2, len(rows) - avail))
             end = start + avail
@@ -1923,7 +1934,7 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
     footer = Text("\n".join(footer_lines), style="bold grey70")
     if palette is not None:
         p_query, p_cursor = palette
-        return Group(header, body, status, footer, render_palette(p_query, p_cursor))
+        return Group(header, body, status, footer, render_palette(p_query, p_cursor, palette_limit))
     return Group(header, body, status, footer, render_command_input())
 
 

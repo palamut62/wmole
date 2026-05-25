@@ -213,7 +213,40 @@ class WmoleBehaviorTests(unittest.TestCase):
 
         rendered = test_console.export_text()
         self.assertIn("/quit", rendered)
+        self.assertIn("> /quit", rendered)
         self.assertNotIn("/analyze", rendered)
+
+    def test_enter_runs_highlighted_palette_command_after_scrolling(self):
+        keys = iter(
+            ["/"] + ["DOWN"] * (len(mole.palette_commands()) - 1) + ["ENTER"]
+        )
+        fake_scanner = mock.Mock(
+            status="",
+            done=True,
+            current_cat_key=None,
+            current_item_id=None,
+        )
+        fake_live = mock.MagicMock()
+        fake_live.__enter__.return_value = fake_live
+        fake_live.__exit__.return_value = False
+        empty_category = mole.Category(
+            key="fs:test", title=r"C:\Users\example", description="", items=[]
+        )
+        with (
+            mock.patch.object(mole, "Scanner", return_value=fake_scanner),
+            mock.patch.object(mole.threading, "Thread") as thread,
+            mock.patch.object(mole, "Live", return_value=fake_live),
+            mock.patch.object(mole, "build_fs_category", return_value=empty_category),
+            mock.patch.object(mole, "load_whitelist", return_value=[]),
+            mock.patch.object(mole, "load_config", return_value={}),
+            mock.patch.object(mole, "free_space_gb", return_value=18.1),
+            mock.patch.object(mole.os, "system"),
+            mock.patch.object(mole.msvcrt, "kbhit", return_value=True),
+            mock.patch.object(mole, "read_key", side_effect=lambda: next(keys)),
+        ):
+            mole.run_tui()
+
+        thread.return_value.start.assert_called_once()
 
     def test_command_input_is_visible_when_palette_is_idle(self):
         output = io.StringIO()
@@ -284,6 +317,86 @@ class WmoleBehaviorTests(unittest.TestCase):
         self.assertLess(first_command_row, test_console.height)
         self.assertLess(last_command_row, test_console.height)
         self.assertLessEqual(len(lines), test_console.height)
+
+    def test_open_palette_scrolls_inside_border_in_short_terminal(self):
+        output = io.StringIO()
+        test_console = Console(
+            record=True, width=140, height=30, color_system=None, file=output
+        )
+        items = [
+            mole.Item(path=Path(fr"C:\Users\example\folder-{index}"), size=index + 1)
+            for index in range(30)
+        ]
+        category = mole.Category(
+            key="fs:test",
+            title=r"C:\Users\example",
+            description="",
+            items=items,
+            scanning=False,
+        )
+        scanner = mock.Mock(
+            status="",
+            done=True,
+            current_cat_key=None,
+            current_item_id=None,
+        )
+        view = mole.View(title=category.title, kind="items", category=category)
+        with (
+            mock.patch.object(mole, "console", test_console),
+            mock.patch.object(mole, "LANG", "en"),
+            mock.patch.object(mole, "free_space_gb", return_value=18.1),
+        ):
+            test_console.print(
+                mole.render(
+                    scanner, view, 0, "", True, False, [], [],
+                    palette=("", len(mole.palette_commands()) - 1),
+                )
+            )
+
+        lines = test_console.export_text().splitlines()
+        self.assertIn("/quit", "\n".join(lines))
+        self.assertLessEqual(len(lines), test_console.height)
+        self.assertTrue(lines[-1].startswith("\u2514"))
+
+    def test_open_palette_prioritizes_closed_frame_in_minimal_terminal(self):
+        output = io.StringIO()
+        test_console = Console(
+            record=True, width=140, height=22, color_system=None, file=output
+        )
+        items = [
+            mole.Item(path=Path(fr"C:\Users\example\folder-{index}"), size=index + 1)
+            for index in range(30)
+        ]
+        category = mole.Category(
+            key="fs:test",
+            title=r"C:\Users\example",
+            description="",
+            items=items,
+            scanning=False,
+        )
+        scanner = mock.Mock(
+            status="",
+            done=True,
+            current_cat_key=None,
+            current_item_id=None,
+        )
+        view = mole.View(title=category.title, kind="items", category=category)
+        with (
+            mock.patch.object(mole, "console", test_console),
+            mock.patch.object(mole, "LANG", "en"),
+            mock.patch.object(mole, "free_space_gb", return_value=18.1),
+        ):
+            test_console.print(
+                mole.render(
+                    scanner, view, 0, "", True, False, [], [],
+                    palette=("", len(mole.palette_commands()) - 1),
+                )
+            )
+
+        lines = test_console.export_text().splitlines()
+        self.assertIn("> /quit", "\n".join(lines))
+        self.assertLessEqual(len(lines), test_console.height)
+        self.assertTrue(lines[-1].startswith("\u2514"))
 
     def test_quiet_update_check_returns_visible_up_to_date_status(self):
         release = {"tag_name": f"v{mole.__version__}", "assets": []}

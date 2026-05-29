@@ -109,6 +109,9 @@ Useful knobs:
 - `purge_paths.txt`: default purge roots.
 - `--paths "C:\src;D:\repos"`: per-run path override for purge/clean.
 - `--whitelist C:\path\whitelist.txt`: per-run whitelist override for clean.
+- `WMOLE_SCAN_WORKERS`: scan parallelism (default `min(8, cpu*2)`, `1` = single-thread).
+- `--no-cache`: bypass the `~/.wmole/cache.json` size cache for this run.
+- `~/.wmole/cache.json`: mtime-keyed size cache (auto-managed; ignored safely if corrupt).
 
 ## Getting Started
 

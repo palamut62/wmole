@@ -2,7 +2,7 @@
   #define MyAppName "wmole"
 #endif
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.3"
+  #define MyAppVersion "0.3.4"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "palamut62"

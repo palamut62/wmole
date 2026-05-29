@@ -268,6 +268,15 @@
       <div class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
         <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
           <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
+            <i data-lucide="layout-dashboard" class="w-4 h-4 text-primary"></i>
+            Startup Dashboard
+          </h4>
+          <p class="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+            Launches into a live overview: disk &amp; RAM fullness, CPU and a 0-100 health score, reclaimable-space analysis, and a history of past cleanups with total space freed. One-key quick clean from the panel.
+          </p>
+        </div>
+        <div class="rounded-lg border bg-card p-4 sm:p-5 hover:border-primary/50 transition-colors duration-200">
+          <h4 class="font-bold text-foreground mb-1.5 flex items-center gap-2">
             <i data-lucide="folder-search" class="w-4 h-4 text-primary"></i>
             TUI Path Explorer
           </h4>
@@ -329,6 +338,7 @@
           Type <code>/</code> in the always-visible input, filter operations, and press Enter to open the selected surface:
         </p>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs code-font text-muted-foreground bg-background/50 p-3 rounded border">
+          <div><b class="text-foreground">/dashboard</b> : Overview</div>
           <div><b class="text-foreground">/analyze</b> : Filesystem</div>
           <div><b class="text-foreground">/clean</b> : Safe cleanup</div>
           <div><b class="text-foreground">/purge</b> : Dev artifacts</div>
@@ -345,6 +355,8 @@
           <div><b class="text-foreground">G</b> : Large files</div>
           <div><b class="text-foreground">V</b> : Drive picker</div>
           <div><b class="text-foreground">O</b> : Open in Explorer</div>
+          <div><b class="text-foreground">C</b> : Quick clean</div>
+          <div><b class="text-foreground">S</b> : Live status</div>
         </div>
       </div>
 
@@ -388,7 +400,7 @@
           MIT License
         </a>{" "}
         <br class="sm:hidden" />
-        • v0.3.3 • Python • PyInstaller • Inno Setup • Rich TUI
+        • v0.3.7 • Python • PyInstaller • Inno Setup • Rich TUI
       </footer>
     </main>
   </div>

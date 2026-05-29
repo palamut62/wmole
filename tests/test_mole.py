@@ -544,6 +544,56 @@ class WmoleBehaviorTests(unittest.TestCase):
                 sc = mole.Scanner(profile="idle", use_cache=False)
                 self.assertEqual(sc.cache, {})
 
+    def test_denylist_uses_prefix_not_substring(self):
+        with tempfile.TemporaryDirectory() as td:
+            deny = Path(td) / "data"
+            deny.mkdir()
+            with mock.patch.object(mole, "load_denylist", return_value=[deny]):
+                # exact and real child are protected
+                self.assertTrue(mole.is_protected_path(deny))
+                self.assertTrue(mole.is_protected_path(deny / "sub"))
+                # sibling that merely shares a name prefix is NOT protected
+                self.assertFalse(mole.is_protected_path(Path(td) / "database"))
+
+    def test_delete_path_no_send2trash_does_not_permanently_delete(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "keep.txt"
+            f.write_bytes(b"data")
+            with mock.patch.object(mole, "send2trash", None):
+                err = mole.delete_path(f, use_trash=True, dry_run=False)
+            self.assertIsNotNone(err)
+            self.assertTrue(f.exists())  # must NOT be permanently deleted
+
+    def test_is_leftover_match_is_strict(self):
+        tokens = mole.normalize_app_tokens("GitHub Desktop")
+        self.assertTrue(mole.is_leftover_match(Path("GitHubDesktop"), tokens))
+        self.assertTrue(mole.is_leftover_match(Path("git"), ["git"]))  # exact short token ok
+        # unrelated folder must not match short tokens
+        self.assertFalse(mole.is_leftover_match(Path("gitignore"), ["vlc", "obs"]))
+        # "git" token must not loosely match a longer unrelated folder
+        self.assertFalse(mole.is_leftover_match(Path("gitkraken"), ["git"]))
+
+    def test_cache_get_ttl_expiry(self):
+        cache = {}
+        p = Path("C:/tmp/x")
+        mole.cache_set(cache, p, 123.0, 999)
+        # force an old scanned_at
+        cache[str(p)]["scanned_at"] = 0
+        self.assertIsNone(mole.cache_get(cache, p, 123.0))
+
+    def test_cli_optimize_json_skips_high_risk_without_yes(self):
+        buf = io.StringIO()
+        # Mock run_optimize so no real system commands execute during the test.
+        with mock.patch.object(mole, "run_optimize", return_value="ran"):
+            with contextlib.redirect_stdout(buf):
+                mole.cli_optimize(dry_run=False, json_out=True, yes=False)
+        data = json.loads(buf.getvalue())
+        highs = [r for r in data["results"] if r.get("risk") == "high"]
+        self.assertTrue(highs)
+        self.assertTrue(all("requires --yes" in r["result"] for r in highs))
+        # high-risk actions must never have been executed
+        self.assertTrue(all(r["result"] != "ran" for r in highs))
+
 
 if __name__ == "__main__":
     unittest.main()

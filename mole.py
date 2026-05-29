@@ -190,18 +190,26 @@ def save_size_cache(cache: dict) -> None:
         pass
 
 
+# A directory's mtime only changes when its *direct* children change, so a
+# cached size can be stale for deep trees. A TTL bounds that staleness.
+CACHE_TTL_SECONDS = 24 * 3600
+
+
 def cache_get(cache: dict, path: Path, mtime: float) -> Optional[int]:
     entry = cache.get(str(path))
-    if entry and abs(entry.get("mtime", -1) - mtime) < 1e-6:
-        return int(entry.get("size", 0))
-    return None
+    if not entry or abs(entry.get("mtime", -1) - mtime) >= 1e-6:
+        return None
+    if time.time() - entry.get("scanned_at", 0) > CACHE_TTL_SECONDS:
+        return None
+    return int(entry.get("size", 0))
 
 
 def cache_set(cache: dict, path: Path, mtime: float, size: int) -> None:
     cache[str(path)] = {"mtime": mtime, "size": size, "scanned_at": time.time()}
 
 
-def sized_dir(path: Path, cache: Optional[dict] = None) -> int:
+def sized_dir(path: Path, cache: Optional[dict] = None,
+              lock: "Optional[threading.Lock]" = None) -> int:
     """Compute dir size, consulting/updating an optional mtime cache (in place)."""
     mtime = None
     try:
@@ -209,12 +217,20 @@ def sized_dir(path: Path, cache: Optional[dict] = None) -> int:
     except OSError:
         pass
     if cache is not None and mtime is not None:
-        hit = cache_get(cache, path, mtime)
+        if lock is not None:
+            with lock:
+                hit = cache_get(cache, path, mtime)
+        else:
+            hit = cache_get(cache, path, mtime)
         if hit is not None:
             return hit
     size = dir_size(path)
     if cache is not None and mtime is not None:
-        cache_set(cache, path, mtime, size)
+        if lock is not None:
+            with lock:
+                cache_set(cache, path, mtime, size)
+        else:
+            cache_set(cache, path, mtime, size)
     return size
 
 
@@ -238,9 +254,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "mode_trash":       "🗑 Geri Dönüşüm Kutusu",
         "mode_permanent":   "⚠ KALICI MOD",
         "mode_dry_run":     "KURU ÇALIŞTIRMA",
-        "hint_cats":        "Temizlenecek kategorileri seç — [Boşluk] işaretle, [D] seçilenleri sil, [K] kalıcı mod, [\\] dil",
+        "hint_cats":        "Temizlenecek kategorileri seç — [Boşluk] işaretle, [D] sil, [K] kalıcı mod, [R] yenile, [/] komutlar, [?] yardım, [\\] dil",
         "hint_items":       "İçinde {name} — [Boşluk] işaretle, [D] sil",
-        "hint_fs":          "[Enter] klasörü aç  ·  [G] büyük dosyalar  ·  [V] sürücüler  ·  [O] Explorer  ·  [Boşluk]/[D] sil",
+        "hint_fs":          "[Enter] aç · [G] büyük dosyalar · [V] sürücüler · [O] Explorer · [Boşluk]/[D] sil · [/] komutlar · [?] yardım",
         "hint_status":      "Canlı sistem durumu (otomatik yenilenir) — [Q]/[Esc] geri",
         "hint_optimize":    "Optimize işlemleri — [Enter] çalıştır (yönetici gerekebilir)",
         "hint_uninstall":   "Kurulu programlar — [Enter] kaldır, [L] artıklar",
@@ -277,9 +293,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "mode_trash":       "🗑 Recycle Bin",
         "mode_permanent":   "⚠ PERMANENT MODE",
         "mode_dry_run":     "DRY-RUN",
-        "hint_cats":        "Select cleanable categories — [Space] pick, [D] delete selected, [K] permanent, [\\] lang",
+        "hint_cats":        "Select cleanable categories — [Space] pick, [D] delete, [K] permanent, [R] refresh, [/] commands, [?] help, [\\] lang",
         "hint_items":       "Inside {name} — [Space] pick, [D] delete",
-        "hint_fs":          "[Enter] open  ·  [G] large files  ·  [V] drives  ·  [O] Explorer  ·  [Space]/[D] delete",
+        "hint_fs":          "[Enter] open · [G] large files · [V] drives · [O] Explorer · [Space]/[D] delete · [/] commands · [?] help",
         "hint_status":      "Live system status (auto-refresh) — [Q]/[Esc] back",
         "hint_optimize":    "Optimize actions — [Enter] run (admin may be required)",
         "hint_uninstall":   "Installed programs — [Enter] uninstall, [L] leftovers",
@@ -432,8 +448,10 @@ def is_protected_path(path: Path) -> bool:
     user_root = str(USER).rstrip("\\/").lower()
     if raw == user_root:
         return True
-    if any(raw == str(d).rstrip("\\/").lower() or str(d).rstrip("\\/").lower() in raw for d in denylist):
-        return True
+    for d in denylist:
+        dn = str(d).rstrip("\\/").lower()
+        if dn and (raw == dn or raw.startswith(dn + "\\")):
+            return True
     if ".git" in [part.lower() for part in p.parts]:
         return True
     if path_exists(p / ".git"):
@@ -473,6 +491,19 @@ def _onerr_chmod(func, path, exc):
         pass
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """True for Windows junctions/symlinks (reparse points), incl. dir junctions
+    that pathlib's is_symlink() misses. Used to avoid rmtree following the link."""
+    try:
+        attrs = os.stat(path, follow_symlinks=False).st_file_attributes  # type: ignore[attr-defined]
+        return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except (AttributeError, OSError):
+        try:
+            return path.is_symlink()
+        except OSError:
+            return False
+
+
 def delete_path(path: Path, use_trash: bool, dry_run: bool, known_size: int = 0) -> Optional[str]:
     """Returns None on success, error string otherwise.
 
@@ -494,7 +525,13 @@ def delete_path(path: Path, use_trash: bool, dry_run: bool, known_size: int = 0)
     if dry_run:
         log_operation("delete-dry-run", path, size=size, result="ok")
         return None
-    if use_trash and send2trash is not None:
+    if use_trash:
+        if send2trash is None:
+            # Safe mode requested but recycle-bin support is unavailable.
+            # Do NOT silently fall back to permanent deletion.
+            msg = "recycle bin unavailable (send2trash not installed)"
+            log_operation("delete-blocked", path, size=size, result=msg)
+            return msg
         try:
             send2trash(str(path))
             log_operation("delete-trash", path, size=size, result="ok")
@@ -505,8 +542,12 @@ def delete_path(path: Path, use_trash: bool, dry_run: bool, known_size: int = 0)
             log_operation("delete-trash", path, size=size, result=msg)
             return msg
     try:
-        if path.is_file() or path.is_symlink():
-            path.unlink()
+        if path.is_file() or path.is_symlink() or _is_reparse_point(path):
+            # Remove the link/junction itself; never recurse into its target.
+            try:
+                path.unlink()
+            except (IsADirectoryError, PermissionError, OSError):
+                os.rmdir(path)
         else:
             shutil.rmtree(path, onerror=_onerr_chmod)
         log_operation("delete-permanent", path, size=size, result="ok")
@@ -931,8 +972,9 @@ def build_purge_categories(roots: List[Path], whitelist: Optional[List[Path]] = 
     workers = workers or min(8, (os.cpu_count() or 4) * 2)
     sizes: Dict[Path, int] = {}
     if pairs:
+        cache_lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for p, sz in pool.map(lambda pr: (pr[1], sized_dir(pr[1], cache)), pairs):
+            for p, sz in pool.map(lambda pr: (pr[1], sized_dir(pr[1], cache, cache_lock)), pairs):
                 sizes[p] = sz
     by_title: Dict[str, Category] = {}
     for title, p in pairs:
@@ -1147,7 +1189,8 @@ class Scanner:
         except OSError:
             mtime = None
         if self.use_cache and mtime is not None:
-            cached = cache_get(self.cache, it.path, mtime)
+            with self._lock:
+                cached = cache_get(self.cache, it.path, mtime)
             if cached is not None:
                 it.size = cached
                 it.partial = cached
@@ -2028,7 +2071,7 @@ def interactive_tui_update(live: Live, scanner: Scanner, view: View, cursor: int
         return T_update("no_asset")
         
     url = asset["browser_download_url"]
-    name = asset["name"]
+    name = Path(asset["name"]).name  # strip any path components from the API value
     expected_size = int(asset.get("size") or 0)
     dest = TEMP / name
     
@@ -2699,7 +2742,8 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     break
                 time.sleep(0.05)
                 now = time.time()
-                if should_redraw(last_draw, now, scanner_active=not scanner.done):
+                active = (not scanner.done) or view.kind == "status"
+                if should_redraw(last_draw, now, scanner_active=active):
                     live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
                                    palette=(palette_query, palette_cursor) if palette_open else None))
                     last_draw = now
@@ -2923,6 +2967,8 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                 view_stack.append(View(title=drives.title, kind="items", category=drives))
                 cursor = 0
             elif up == "SPACE" and view.kind in ("cats", "items"):
+                if not rows:
+                    continue
                 row = rows[cursor]
                 if isinstance(row, Item):
                     if row.error == "up":
@@ -2988,10 +3034,10 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     msg = f"Reloaded {len(apps_cache)} programs."
 # ---------- CLI ----------
 def cli_clean(dry_run: bool, json_out: bool, roots: Optional[List[Path]] = None,
-              whitelist: Optional[List[Path]] = None) -> None:
+              whitelist: Optional[List[Path]] = None, use_cache: bool = True) -> None:
     """Headless: scan, pick the safe_default categories, ask once, delete."""
     wl = whitelist if whitelist is not None else load_whitelist()
-    s = Scanner(whitelist=wl, profile="clean", roots=roots)
+    s = Scanner(whitelist=wl, profile="clean", roots=roots, use_cache=use_cache)
     s.run()
     report = collect_selected_targets(s.categories, estimated=roots is None)
     target_paths = {row["path"] for row in report["targets"]}
@@ -3079,7 +3125,16 @@ def is_leftover_match(path: Path, tokens: List[str]) -> bool:
     compact_name = "".join(ch.lower() for ch in path.stem if ch.isalnum())
     if not compact_name:
         return False
-    return any(token in compact_name or compact_name in token for token in tokens)
+    for token in tokens:
+        if compact_name == token:
+            return True
+        # Prefix matches only when BOTH sides are long enough; this prevents
+        # short tokens (git, vlc, obs) from matching unrelated folders.
+        if len(token) >= 5 and len(compact_name) >= 5 and (
+            compact_name.startswith(token) or token.startswith(compact_name)
+        ):
+            return True
+    return False
 
 
 def default_leftover_roots() -> List[Path]:
@@ -3109,17 +3164,18 @@ def filter_apps(apps: List[dict], query: str = "", limit: Optional[int] = None) 
 def find_registry_leftover_candidates(app: dict) -> List[str]:
     if os.name != "nt":
         return []
-    name = (app.get("name") or "").strip().lower()
-    pub = (app.get("publisher") or "").strip().lower()
-    if not name and not pub:
+    # Match on the app NAME only — publisher substring matching caused every
+    # product from a vendor (e.g. all "Microsoft" entries) to be flagged.
+    tokens = normalize_app_tokens(app.get("name") or "")
+    if not tokens:
         return []
-    targets = [t for t in {name, pub} if t]
     keys = []
     for row in list_installed_apps():
         key = str(row.get("uninstall_key") or "")
-        rn = str(row.get("name") or "").lower()
-        rp = str(row.get("publisher") or "").lower()
-        if any(t in rn or t in rp for t in targets):
+        rn_compact = "".join(ch.lower() for ch in str(row.get("name") or "") if ch.isalnum())
+        if not rn_compact:
+            continue
+        if any(t == rn_compact or (len(t) >= 5 and rn_compact.startswith(t)) for t in tokens):
             keys.append(key)
     seen = set()
     out = []
@@ -3188,14 +3244,21 @@ def cli_status() -> None:
     print(f"Disk: {du.percent}% ({human_size(du.free)} free)")
 
 
-def cli_optimize(dry_run: bool, json_out: bool) -> None:
+def cli_optimize(dry_run: bool, json_out: bool, yes: bool = False) -> None:
     rows = []
     for action in OPTIMIZE_ACTIONS:
-        if action.risk == "high" and not dry_run and not json_out:
-            print(f"High risk action '{action.title}'. Continue? [y/N] ", end="")
-            if input().strip().lower() != "y":
-                rows.append({"title": action.title, "result": "cancelled"})
-                continue
+        if action.risk == "high" and not dry_run:
+            if json_out:
+                # Non-interactive: never run destructive actions without --yes.
+                if not yes:
+                    rows.append({"title": action.title, "result": "skipped: high-risk requires --yes",
+                                 "risk": action.risk, "admin": action.requires_admin})
+                    continue
+            elif not yes:
+                print(f"High risk action '{action.title}'. Continue? [y/N] ", end="")
+                if input().strip().lower() != "y":
+                    rows.append({"title": action.title, "result": "cancelled"})
+                    continue
         rows.append({"title": action.title, "result": run_optimize(action, dry_run=dry_run), "risk": action.risk, "admin": action.requires_admin})
     if json_out:
         print(json.dumps({"dry_run": dry_run, "results": rows}, indent=2))
@@ -3395,7 +3458,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
                           "output": "no installer asset found in release"})
             return _emit_update(steps, json_out, quiet)
         url = asset["browser_download_url"]
-        name = asset["name"]
+        name = Path(asset["name"]).name  # strip any path components from the API value
         steps.append({"step": "asset", "code": 0, "output": name})
 
         if dry_run:
@@ -3513,7 +3576,7 @@ def _auto_update_worker() -> None:
         if not asset:
             return
         expected_size = int(asset.get("size") or 0)
-        dest = TEMP / asset["name"]
+        dest = TEMP / Path(asset["name"]).name  # strip any path components
 
         # Skip download if we already have this exact installer staged.
         if PENDING_UPDATE_FILE.exists():
@@ -3727,14 +3790,21 @@ def cli_ports(json_out: bool, kill_target: str = "", dry_run: bool = False,
         target = kill_target.strip().lower()
         if target == "all":
             victims = rows
+        elif target.startswith("port:") and target[5:].isdigit():
+            n = int(target[5:])
+            victims = [r for r in rows if r["port"] == n]
+        elif target.startswith("pid:") and target[4:].isdigit():
+            n = int(target[4:])
+            victims = [r for r in rows if r["pid"] == n]
         elif target.isdigit():
             n = int(target)
-            # match by port first, else by PID
+            # Bare number is ambiguous: prefer port, fall back to PID.
+            # Use 'port:N' or 'pid:N' to be explicit.
             victims = [r for r in rows if r["port"] == n] or \
                       [r for r in rows if r["pid"] == n]
         else:
             print(json.dumps({"error": f"invalid --kill target: {kill_target}"}, indent=2)
-                  if json_out else f"invalid --kill target: {kill_target}")
+                  if json_out else f"invalid --kill target: {kill_target} (use <port>, port:N, pid:N, or all)")
             return
         results = []
         seen_pids = set()
@@ -3770,7 +3840,7 @@ def cli_ports(json_out: bool, kill_target: str = "", dry_run: bool = False,
         print(f"{r['proto']:<5} {r['port']:>6}  {str(r['pid'] or '-'):>6}  "
               f"{(r['process'] or '-')[:22]:<22} {r['ip']:<16} {r['hint']}")
     print()
-    print("Kill: wmole ports --kill <port|pid|all>   (add --dry-run to preview)")
+    print("Kill: wmole ports --kill <port|port:N|pid:N|all>   (add --dry-run to preview)")
 
 
 def powershell_completion_script() -> str:
@@ -3836,7 +3906,7 @@ def main_cli() -> None:
     elif args.mode == "analyze" and target_paths:
         run_tui(initial_view="analyze", start_path=target_paths[0], use_cache=not args.no_cache)
     elif args.mode == "clean":
-        cli_clean(dry_run=args.dry_run, json_out=args.json_out, roots=target_paths or None, whitelist=whitelist)
+        cli_clean(dry_run=args.dry_run, json_out=args.json_out, roots=target_paths or None, whitelist=whitelist, use_cache=not args.no_cache)
     elif args.mode == "purge":
         roots = target_paths or load_purge_roots() or discover_scan_roots()
         cli_categories(build_purge_categories(roots, whitelist=whitelist),
@@ -3875,7 +3945,7 @@ def main_cli() -> None:
     elif args.mode == "status":
         cli_status()
     elif args.mode == "optimize":
-        cli_optimize(dry_run=args.dry_run, json_out=args.json_out)
+        cli_optimize(dry_run=args.dry_run, json_out=args.json_out, yes=args.yes)
     elif args.mode == "uninstall" and args.json_out:
         cli_uninstall(json_out=True, query=args.query, limit=args.limit, include_leftovers=args.leftovers)
     elif args.mode == "update":

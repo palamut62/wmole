@@ -2592,7 +2592,8 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
 
 
 # ---------- Main loop ----------
-def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) -> None:
+def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
+            use_cache: bool = True) -> None:
     if os.name == "nt":
         os.system("")
         try:
@@ -2605,7 +2606,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
     cfg = load_config()
     analyze_start = start_path or Path(str(cfg.get("analyze_start_path", USER))).expanduser()
     profile = "purge" if initial_view == "purge" else ("installers" if initial_view in ("installer", "installers") else ("idle" if initial_view == "analyze" else "full"))
-    scanner = Scanner(whitelist=whitelist, profile=profile)
+    scanner = Scanner(whitelist=whitelist, profile=profile, use_cache=use_cache)
     threading.Thread(target=scanner.run, daemon=True).start()
 
     apps_cache: List[dict] = []
@@ -2649,6 +2650,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
     TRANSITION_FRAMES = 4  # frames to spend on transition animation
 
     with Live(console=console, refresh_per_second=8, screen=True, vertical_overflow="crop") as live:
+        last_draw = 0.0
         while True:
             view = view_stack[-1]
             if view.kind in ("cats", "items"):
@@ -2688,6 +2690,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
 
             live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
                                palette=(palette_query, palette_cursor) if palette_open else None))
+            last_draw = time.time()
 
             key = None
             for _ in range(20):
@@ -2695,8 +2698,11 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                     key = read_key()
                     break
                 time.sleep(0.05)
-                live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
-                               palette=(palette_query, palette_cursor) if palette_open else None))
+                now = time.time()
+                if should_redraw(last_draw, now, scanner_active=not scanner.done):
+                    live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
+                                   palette=(palette_query, palette_cursor) if palette_open else None))
+                    last_draw = now
             if key is None:
                 continue
             msg = ""
@@ -2972,7 +2978,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                         cursor = 0
                         msg = "Refreshed."
                     else:
-                        scanner = Scanner(whitelist=whitelist, profile=profile)
+                        scanner = Scanner(whitelist=whitelist, profile=profile, use_cache=use_cache)
                         threading.Thread(target=scanner.run, daemon=True).start()
                         view_stack = [View(title="Analyze Disk", kind="cats")]
                         cursor = 0
@@ -3811,6 +3817,7 @@ def main_cli() -> None:
     p.add_argument("--enable-auto", action="store_true", help="update mode: turn background auto-update back on")
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
+    p.add_argument("--no-cache", action="store_true", help="bypass size cache for this run")
     args = p.parse_args()
 
     # Do not start a final background check while the user is disabling it.
@@ -3827,7 +3834,7 @@ def main_cli() -> None:
     if args.mode == "analyze" and args.json_out:
         cli_analyze(target_paths[0] if target_paths else USER, json_out=True)
     elif args.mode == "analyze" and target_paths:
-        run_tui(initial_view="analyze", start_path=target_paths[0])
+        run_tui(initial_view="analyze", start_path=target_paths[0], use_cache=not args.no_cache)
     elif args.mode == "clean":
         cli_clean(dry_run=args.dry_run, json_out=args.json_out, roots=target_paths or None, whitelist=whitelist)
     elif args.mode == "purge":
@@ -3894,7 +3901,7 @@ def main_cli() -> None:
         cli_ports(json_out=args.json_out, kill_target=args.kill,
                   dry_run=args.dry_run, include_all=args.all_binds)
     else:
-        run_tui(initial_view=args.mode if args.mode in ("status", "optimize", "uninstall", "purge", "installer", "installers") else "analyze")
+        run_tui(initial_view=args.mode if args.mode in ("status", "optimize", "uninstall", "purge", "installer", "installers") else "analyze", use_cache=not args.no_cache)
 
 
 if __name__ == "__main__":

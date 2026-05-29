@@ -463,6 +463,87 @@ class WmoleBehaviorTests(unittest.TestCase):
         res = mole.run_optimize(action, dry_run=True)
         self.assertIn("dry-run", res)
 
+    def test_dir_size_scandir_counts_nested_and_respects_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.txt").write_bytes(b"x" * 100)
+            sub = root / "sub"
+            sub.mkdir()
+            (sub / "b.txt").write_bytes(b"y" * 250)
+            self.assertEqual(mole.dir_size(root), 350)
+
+            seen = []
+            total = mole.dir_size(root, on_progress=lambda n: seen.append(n))
+            self.assertEqual(total, 350)
+            self.assertTrue(seen)
+
+            capped = mole.dir_size(root, max_files=1)
+            self.assertLessEqual(capped, 350)
+            self.assertGreater(capped, 0)
+
+    def test_size_cache_roundtrip_and_invalidation(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / "cache.json"
+            with mock.patch.object(mole, "CACHE_FILE", cache_file):
+                target = Path(td) / "data"
+                target.mkdir()
+                cache = mole.load_size_cache()
+                self.assertEqual(cache, {})
+                mtime = target.stat().st_mtime
+                mole.cache_set(cache, target, mtime, 1234)
+                mole.save_size_cache(cache)
+
+                reloaded = mole.load_size_cache()
+                self.assertEqual(mole.cache_get(reloaded, target, mtime), 1234)
+                self.assertIsNone(mole.cache_get(reloaded, target, mtime + 10))
+
+    def test_should_redraw_throttles_idle_and_allows_active(self):
+        self.assertTrue(mole.should_redraw(last_draw=0.0, now=1.0,
+                                            scanner_active=True, min_interval=0.08))
+        self.assertFalse(mole.should_redraw(last_draw=1.0, now=1.02,
+                                            scanner_active=True, min_interval=0.08))
+        self.assertFalse(mole.should_redraw(last_draw=0.0, now=100.0,
+                                            scanner_active=False, min_interval=0.08))
+
+    def test_scanner_parallel_sizes_clean_categories(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            proj = root / "proj"
+            (proj / "node_modules").mkdir(parents=True)
+            (proj / "node_modules" / "big.js").write_bytes(b"z" * 5000)
+            sc = mole.Scanner(profile="purge", roots=[root])
+            sc.run()
+            self.assertTrue(sc.done)
+            total = sum(c.total for c in sc.categories)
+            self.assertGreaterEqual(total, 5000)
+
+    def test_scanner_uses_size_cache_on_second_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / "cache.json"
+            with mock.patch.object(mole, "CACHE_FILE", cache_file):
+                root = Path(td) / "proj"
+                (root / "node_modules").mkdir(parents=True)
+                (root / "node_modules" / "x.js").write_bytes(b"q" * 4000)
+
+                sc1 = mole.Scanner(profile="purge", roots=[Path(td)])
+                sc1.run()
+                self.assertTrue(cache_file.exists())
+
+                with mock.patch.object(mole, "dir_size",
+                                       side_effect=AssertionError("should be cached")):
+                    sc2 = mole.Scanner(profile="purge", roots=[Path(td)])
+                    sc2.run()
+                total = sum(c.total for c in sc2.categories)
+                self.assertGreaterEqual(total, 4000)
+
+    def test_scanner_use_cache_false_skips_load(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / "cache.json"
+            cache_file.write_text('{"x": {"mtime": 1, "size": 9}}', encoding="utf-8")
+            with mock.patch.object(mole, "CACHE_FILE", cache_file):
+                sc = mole.Scanner(profile="idle", use_cache=False)
+                self.assertEqual(sc.cache, {})
+
 
 if __name__ == "__main__":
     unittest.main()

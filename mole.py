@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -103,6 +104,7 @@ CONFIG_FILE = WMOLE_DIR / "config.json"
 WHITELIST_FILE = WMOLE_DIR / "whitelist.txt"
 PURGE_PATHS_FILE = WMOLE_DIR / "purge_paths.txt"
 DENYLIST_FILE = WMOLE_DIR / "denylist.txt"
+CACHE_FILE = WMOLE_DIR / "cache.json"
 COMPLETION_FILE = WMOLE_DIR / "completion.ps1"
 LOG_DIR = WMOLE_DIR / "logs"
 OP_LOG_FILE = LOG_DIR / "operations.log"
@@ -128,30 +130,100 @@ def dir_size(path: Path, on_progress=None, max_seconds: Optional[float] = None,
     last_emit = 0
     started = time.time()
     seen = 0
+
+    def walk(p) -> bool:
+        """Returns False when a budget limit is hit (stop signal)."""
+        nonlocal total, last_emit, seen
+        try:
+            with os.scandir(p) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if not walk(entry.path):
+                                return False
+                            continue
+                        total += entry.stat(follow_symlinks=False).st_size
+                        seen += 1
+                    except OSError:
+                        continue
+                    if max_files is not None and seen >= max_files:
+                        return False
+                    if max_seconds is not None and time.time() - started >= max_seconds:
+                        return False
+                    if on_progress and total - last_emit > 25_000_000:
+                        on_progress(total)
+                        last_emit = total
+        except OSError:
+            return True
+        return True
+
     try:
-        for root, _dirs, files in os.walk(path, onerror=lambda e: None):
-            for f in files:
-                try:
-                    total += os.stat(os.path.join(root, f)).st_size
-                    seen += 1
-                except OSError:
-                    pass
-                if max_files is not None and seen >= max_files:
-                    if on_progress:
-                        on_progress(total)
-                    return total
-                if max_seconds is not None and time.time() - started >= max_seconds:
-                    if on_progress:
-                        on_progress(total)
-                    return total
-            if on_progress and total - last_emit > 25_000_000:
-                on_progress(total)
-                last_emit = total
+        if Path(path).is_file():
+            try:
+                return os.stat(path).st_size
+            except OSError:
+                return 0
+        walk(path)
     except Exception:
         pass
     if on_progress:
         on_progress(total)
     return total
+
+
+def load_size_cache() -> dict:
+    """Returns {path_str: {"mtime": float, "size": int, "scanned_at": float}}."""
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_size_cache(cache: dict) -> None:
+    try:
+        WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CACHE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        os.replace(tmp, CACHE_FILE)
+    except Exception:
+        pass
+
+
+def cache_get(cache: dict, path: Path, mtime: float) -> Optional[int]:
+    entry = cache.get(str(path))
+    if entry and abs(entry.get("mtime", -1) - mtime) < 1e-6:
+        return int(entry.get("size", 0))
+    return None
+
+
+def cache_set(cache: dict, path: Path, mtime: float, size: int) -> None:
+    cache[str(path)] = {"mtime": mtime, "size": size, "scanned_at": time.time()}
+
+
+def sized_dir(path: Path, cache: Optional[dict] = None) -> int:
+    """Compute dir size, consulting/updating an optional mtime cache (in place)."""
+    mtime = None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        pass
+    if cache is not None and mtime is not None:
+        hit = cache_get(cache, path, mtime)
+        if hit is not None:
+            return hit
+    size = dir_size(path)
+    if cache is not None and mtime is not None:
+        cache_set(cache, path, mtime, size)
+    return size
+
+
+def should_redraw(last_draw: float, now: float, scanner_active: bool,
+                  min_interval: float = 0.08) -> bool:
+    """Throttle in-loop re-renders: only redraw while scanning and after min_interval."""
+    if not scanner_active:
+        return False
+    return (now - last_draw) >= min_interval
 
 
 # ---------- i18n ----------
@@ -850,12 +922,20 @@ def build_drive_picker_category() -> Category:
     return cat
 
 
-def build_purge_categories(roots: List[Path], whitelist: Optional[List[Path]] = None) -> List[Category]:
+def build_purge_categories(roots: List[Path], whitelist: Optional[List[Path]] = None,
+                           cache: Optional[dict] = None,
+                           workers: Optional[int] = None) -> List[Category]:
     wl = whitelist or []
+    pairs = [(title, p) for title, p in iter_dev_folders(roots)
+             if not (is_whitelisted(p, wl) or is_protected_path(p))]
+    workers = workers or min(8, (os.cpu_count() or 4) * 2)
+    sizes: Dict[Path, int] = {}
+    if pairs:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for p, sz in pool.map(lambda pr: (pr[1], sized_dir(pr[1], cache)), pairs):
+                sizes[p] = sz
     by_title: Dict[str, Category] = {}
-    for title, p in iter_dev_folders(roots):
-        if is_whitelisted(p, wl) or is_protected_path(p):
-            continue
+    for title, p in pairs:
         cat = by_title.setdefault(title, Category(
             key=f"dev-{title}",
             title=title,
@@ -864,7 +944,7 @@ def build_purge_categories(roots: List[Path], whitelist: Optional[List[Path]] = 
             safe_default=True,
             scanning=False,
         ))
-        cat.items.append(Item(path=p, size=dir_size(p), selected=True))
+        cat.items.append(Item(path=p, size=sizes.get(p, 0), selected=True))
     categories = list(by_title.values())
     for cat in categories:
         cat.items.sort(key=lambda item: item.size, reverse=True)
@@ -1034,7 +1114,8 @@ def old_installers(days: int = 30) -> List[Item]:
 # ---------- Scanner ----------
 class Scanner:
     def __init__(self, whitelist: Optional[List[Path]] = None,
-                 profile: str = "full", roots: Optional[List[Path]] = None) -> None:
+                 profile: str = "full", roots: Optional[List[Path]] = None,
+                 use_cache: bool = True) -> None:
         self.categories: List[Category] = []
         self.status: str = "Initializing…"
         self.done: bool = False
@@ -1044,6 +1125,11 @@ class Scanner:
         self.profile = profile
         self.roots = roots
         self._lock = threading.Lock()
+        self.workers = int(os.environ.get("WMOLE_SCAN_WORKERS",
+                                          min(8, (os.cpu_count() or 4) * 2)))
+        self.use_cache = use_cache
+        self.cache = load_size_cache() if use_cache else {}
+        self._cache_dirty = False
 
     def _add(self, c: Category) -> None:
         with self._lock:
@@ -1056,8 +1142,20 @@ class Scanner:
             it.error = "whitelisted"
             it.selected = False
             return
+        try:
+            mtime = it.path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if self.use_cache and mtime is not None:
+            cached = cache_get(self.cache, it.path, mtime)
+            if cached is not None:
+                it.size = cached
+                it.partial = cached
+                it.scanning = False
+                return
         it.scanning = True
-        self.current_item_id = id(it)
+        with self._lock:
+            self.current_item_id = id(it)
         def on_progress(n: int) -> None:
             it.partial = n
         if self.profile == "clean":
@@ -1066,7 +1164,11 @@ class Scanner:
             it.size = dir_size(it.path, on_progress=on_progress)
         it.partial = it.size
         it.scanning = False
-        self.current_item_id = None
+        with self._lock:
+            self.current_item_id = None
+            if self.use_cache and mtime is not None:
+                cache_set(self.cache, it.path, mtime, it.size)
+                self._cache_dirty = True
 
     def run(self) -> None:
         if self.profile == "idle":
@@ -1080,8 +1182,13 @@ class Scanner:
             self.done = True
             return
         if self.profile == "purge":
-            for cat in build_purge_categories(self.roots or load_purge_roots() or discover_scan_roots(), self.whitelist):
+            for cat in build_purge_categories(self.roots or load_purge_roots() or discover_scan_roots(),
+                                              self.whitelist,
+                                              cache=self.cache if self.use_cache else None,
+                                              workers=self.workers):
                 self._add(cat)
+            if self.use_cache:
+                save_size_cache(self.cache)
             self.status = "Purge scan complete."
             self.done = True
             return
@@ -1140,16 +1247,18 @@ class Scanner:
                 dev_titles[title] = cat
                 self._add(cat)
 
+        pending = [it for cat in fixed_cats for it in cat.items if it.size == 0]
+        self.status = f"Scanning {len(fixed_cats)} categories ({len(pending)} items)…"
+        if pending:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                list(pool.map(self._size_item, pending))
         for cat in fixed_cats:
-            self.status = f"Scanning {cat.title}…"
-            self.current_cat_key = cat.key
-            for it in cat.items:
-                if it.size == 0:  # installers already have size from old_installers
-                    self._size_item(it)
             cat.scanning = False
-            self.current_cat_key = None
+        self.current_cat_key = None
 
         if self.profile == "clean":
+            if self._cache_dirty:
+                save_size_cache(self.cache)
             with self._lock:
                 self.categories.sort(key=lambda c: c.total, reverse=True)
             self.status = "Clean scan complete."
@@ -1158,20 +1267,27 @@ class Scanner:
 
         roots = self.roots or discover_scan_roots()
         self.status = f"Searching {len(roots)} root(s) for dev folders…"
+        dev_items: List[Item] = []
         for title, p in iter_dev_folders(roots):
             cat = dev_titles[title]
             it = Item(path=p, selected=True)
-            cat.items.append(it)
-            self.status = f"Sizing {p}…"
-            self.current_cat_key = cat.key
-            self._size_item(it)
+            with self._lock:
+                cat.items.append(it)
+            dev_items.append(it)
+        self.status = f"Sizing {len(dev_items)} dev folder(s)…"
+        if dev_items:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                list(pool.map(self._size_item, dev_items))
+        for title, cat in dev_titles.items():
             cat.items.sort(key=lambda i: i.size, reverse=True)
             cat.description = f"{len(cat.items)} folder(s) under your dev dirs"
-            self.current_cat_key = None
+        self.current_cat_key = None
 
         for cat in dev_titles.values():
             cat.scanning = False
 
+        if self._cache_dirty:
+            save_size_cache(self.cache)
         with self._lock:
             self.categories.sort(key=lambda c: c.total, reverse=True)
         self.status = "Scan complete."
@@ -2476,7 +2592,8 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
 
 
 # ---------- Main loop ----------
-def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) -> None:
+def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
+            use_cache: bool = True) -> None:
     if os.name == "nt":
         os.system("")
         try:
@@ -2489,7 +2606,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
     cfg = load_config()
     analyze_start = start_path or Path(str(cfg.get("analyze_start_path", USER))).expanduser()
     profile = "purge" if initial_view == "purge" else ("installers" if initial_view in ("installer", "installers") else ("idle" if initial_view == "analyze" else "full"))
-    scanner = Scanner(whitelist=whitelist, profile=profile)
+    scanner = Scanner(whitelist=whitelist, profile=profile, use_cache=use_cache)
     threading.Thread(target=scanner.run, daemon=True).start()
 
     apps_cache: List[dict] = []
@@ -2533,6 +2650,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
     TRANSITION_FRAMES = 4  # frames to spend on transition animation
 
     with Live(console=console, refresh_per_second=8, screen=True, vertical_overflow="crop") as live:
+        last_draw = 0.0
         while True:
             view = view_stack[-1]
             if view.kind in ("cats", "items"):
@@ -2572,6 +2690,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
 
             live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
                                palette=(palette_query, palette_cursor) if palette_open else None))
+            last_draw = time.time()
 
             key = None
             for _ in range(20):
@@ -2579,8 +2698,11 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                     key = read_key()
                     break
                 time.sleep(0.05)
-                live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
-                               palette=(palette_query, palette_cursor) if palette_open else None))
+                now = time.time()
+                if should_redraw(last_draw, now, scanner_active=not scanner.done):
+                    live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
+                                   palette=(palette_query, palette_cursor) if palette_open else None))
+                    last_draw = now
             if key is None:
                 continue
             msg = ""
@@ -2856,7 +2978,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None) ->
                         cursor = 0
                         msg = "Refreshed."
                     else:
-                        scanner = Scanner(whitelist=whitelist, profile=profile)
+                        scanner = Scanner(whitelist=whitelist, profile=profile, use_cache=use_cache)
                         threading.Thread(target=scanner.run, daemon=True).start()
                         view_stack = [View(title="Analyze Disk", kind="cats")]
                         cursor = 0
@@ -3695,6 +3817,7 @@ def main_cli() -> None:
     p.add_argument("--enable-auto", action="store_true", help="update mode: turn background auto-update back on")
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
+    p.add_argument("--no-cache", action="store_true", help="bypass size cache for this run")
     args = p.parse_args()
 
     # Do not start a final background check while the user is disabling it.
@@ -3711,7 +3834,7 @@ def main_cli() -> None:
     if args.mode == "analyze" and args.json_out:
         cli_analyze(target_paths[0] if target_paths else USER, json_out=True)
     elif args.mode == "analyze" and target_paths:
-        run_tui(initial_view="analyze", start_path=target_paths[0])
+        run_tui(initial_view="analyze", start_path=target_paths[0], use_cache=not args.no_cache)
     elif args.mode == "clean":
         cli_clean(dry_run=args.dry_run, json_out=args.json_out, roots=target_paths or None, whitelist=whitelist)
     elif args.mode == "purge":
@@ -3778,7 +3901,7 @@ def main_cli() -> None:
         cli_ports(json_out=args.json_out, kill_target=args.kill,
                   dry_run=args.dry_run, include_all=args.all_binds)
     else:
-        run_tui(initial_view=args.mode if args.mode in ("status", "optimize", "uninstall", "purge", "installer", "installers") else "analyze")
+        run_tui(initial_view=args.mode if args.mode in ("status", "optimize", "uninstall", "purge", "installer", "installers") else "analyze", use_cache=not args.no_cache)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,30 @@ from rich.console import Console
 
 
 class WmoleBehaviorTests(unittest.TestCase):
+    def test_read_cleanup_history_sums_only_successful_deletions(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "operations.log"
+            log.write_text(
+                "2026-05-29 10:00:00\tdelete-trash\t100\tC:\\a\\cache\tok\n"
+                "2026-05-29 10:01:00\tdelete-permanent\t50\tC:\\b\\tmp\tok\n"
+                "2026-05-29 10:02:00\tdelete-dry-run\t999\tC:\\c\\x\tok\n"
+                "2026-05-29 10:03:00\tdelete-trash\t7\tC:\\d\\y\ttrash: failed\n"
+                "2026-05-29 10:04:00\tdelete-blocked\t30\tC:\\Windows\tprotected path\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(mole, "OP_LOG_FILE", log):
+                hist = mole.read_cleanup_history(limit=5)
+            self.assertEqual(hist["count"], 2)
+            self.assertEqual(hist["total_freed"], 150)
+            self.assertEqual(hist["last_ts"], "2026-05-29 10:01:00")
+            # newest-first ordering
+            self.assertEqual(hist["recent"][0]["path"], "C:\\b\\tmp")
+
+    def test_render_dashboard_handles_missing_scanner(self):
+        with mock.patch.object(mole, "OP_LOG_FILE", Path("does-not-exist.log")):
+            group = mole.render_dashboard(scanner=None)
+        self.assertIsNotNone(group)
+
     def test_analyze_path_entries_reports_children_and_large_files(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -177,6 +201,7 @@ class WmoleBehaviorTests(unittest.TestCase):
         self.assertEqual(
             names,
             [
+                "dashboard",
                 "analyze",
                 "categories",
                 "clean",
@@ -238,7 +263,7 @@ class WmoleBehaviorTests(unittest.TestCase):
             mock.patch.object(mole, "Live", return_value=fake_live),
             mock.patch.object(mole, "build_fs_category", return_value=empty_category),
             mock.patch.object(mole, "load_whitelist", return_value=[]),
-            mock.patch.object(mole, "load_config", return_value={"quick_clean_done": True}),
+            mock.patch.object(mole, "load_config", return_value={"quick_clean_v2_done": True}),
             mock.patch.object(mole, "free_space_gb", return_value=18.1),
             mock.patch.object(mole.os, "system"),
             mock.patch.object(mole.msvcrt, "kbhit", return_value=True),

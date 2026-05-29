@@ -90,7 +90,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -1427,6 +1427,145 @@ def render_status() -> Group:
     return Group(out)
 
 
+def read_cleanup_history(limit: int = 6) -> dict:
+    """Parse the operations log for completed deletions.
+
+    Returns total bytes freed all-time, op count, last cleanup timestamp, and
+    the most recent entries (newest first)."""
+    total_freed = 0
+    count = 0
+    last_ts = ""
+    recent: List[dict] = []
+    try:
+        if path_exists(OP_LOG_FILE):
+            lines = OP_LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines:
+                parts = line.split("\t")
+                if len(parts) < 5:
+                    continue
+                ts, action, size_s, target, result = parts[0], parts[1], parts[2], parts[3], parts[4]
+                # Count only successful real deletions (skip dry-run/blocked).
+                if action not in ("delete-trash", "delete-permanent") or result != "ok":
+                    continue
+                try:
+                    size = int(size_s)
+                except ValueError:
+                    size = 0
+                total_freed += size
+                count += 1
+                last_ts = ts
+                recent.append({"ts": ts, "size": size, "path": target, "action": action})
+    except Exception:
+        pass
+    recent = recent[-limit:][::-1]
+    return {"total_freed": total_freed, "count": count, "last_ts": last_ts, "recent": recent}
+
+
+def _meter_bar(pct: float, width: int = 28, color: str = "bright_cyan") -> Text:
+    pct = max(0.0, min(100.0, pct))
+    filled = int(round(width * pct / 100))
+    t = Text()
+    t.append("█" * filled, style=color)
+    t.append("░" * (width - filled), style="grey30")
+    return t
+
+
+def render_dashboard(scanner: Optional["Scanner"] = None) -> Group:
+    """Landing dashboard: disk/PC fullness, system health, cleanup history,
+    and reclaimable-space estimate from the live clean scan."""
+    out = Text()
+    out.append("📊 Gösterge Paneli\n\n", style="bold bright_magenta")
+
+    # ── Disk fullness ──
+    if psutil is not None:
+        try:
+            disk = psutil.disk_usage(USER.anchor or "C:\\")
+            mem = psutil.virtual_memory()
+            cpu = psutil.cpu_percent(interval=0.1)
+            score = health_score()
+            score_color = ("green3" if score >= 75 else "yellow" if score >= 50
+                           else "dark_orange" if score >= 30 else "red")
+            disk_color = ("red" if disk.percent >= 90 else "dark_orange" if disk.percent >= 75
+                          else "bright_cyan")
+            mem_color = ("red" if mem.percent >= 90 else "dark_orange" if mem.percent >= 75
+                         else "green3")
+
+            out.append("  Disk    ", style="grey70")
+            out.append(_meter_bar(disk.percent, color=disk_color))
+            out.append(f"  {disk.percent:5.1f}%", style=f"bold {disk_color}")
+            out.append(f"   {human_size(disk.used)} / {human_size(disk.total)}  ", style="grey62")
+            out.append(f"({human_size(disk.free)} boş)\n", style="green")
+
+            out.append("  RAM     ", style="grey70")
+            out.append(_meter_bar(mem.percent, color=mem_color))
+            out.append(f"  {mem.percent:5.1f}%", style=f"bold {mem_color}")
+            out.append(f"   {human_size(mem.used)} / {human_size(mem.total)}\n", style="grey62")
+
+            out.append("  CPU     ", style="grey70")
+            out.append(_meter_bar(cpu, color="bright_blue"))
+            out.append(f"  {cpu:5.1f}%\n", style="bold bright_blue")
+
+            out.append("  Sağlık  ", style="grey70")
+            out.append(_meter_bar(score, color=score_color))
+            out.append(f"  {score}/100\n", style=f"bold {score_color}")
+        except Exception:
+            out.append("  (sistem metrikleri okunamadı)\n", style="red")
+    else:
+        out.append("  psutil yüklü değil — `pip install psutil`\n", style="red")
+
+    # ── Reclaimable space from the live clean scan ──
+    out.append("\n  Temizlik Analizi\n", style="bold grey85")
+    reclaimable = 0
+    items = 0
+    scan_done = True
+    try:
+        scan_done = bool(scanner.done) if scanner is not None else True
+        cats = list(scanner.categories) if scanner is not None else []
+        for c in cats:
+            for it in c.items:
+                if it.selected and not it.deleted and not is_protected_path(it.path):
+                    reclaimable += (it.partial or it.size)
+                    items += 1
+    except TypeError:
+        cats = []
+    if scanner is not None:
+        if not scan_done:
+            out.append("   ⟳ taranıyor…  ", style="bright_yellow")
+            out.append(f"şimdiye dek {human_size(reclaimable)} geri kazanılabilir\n", style="grey70")
+        elif reclaimable > 0:
+            out.append("   ♻ Geri kazanılabilir: ", style="grey70")
+            out.append(f"{human_size(reclaimable)}", style="bold bright_green")
+            out.append(f"  ({items} öğe)\n", style="grey62")
+            out.append("   [C] Hızlı temizliği başlat\n", style="bright_cyan")
+        else:
+            out.append("   ✓ Temizlenecek fazla veri yok\n", style="green")
+    else:
+        out.append("   (analiz bekleniyor)\n", style="grey50")
+
+    # ── Cleanup history ──
+    hist = read_cleanup_history(limit=5)
+    out.append("\n  Yapılan Temizlikler\n", style="bold grey85")
+    if hist["count"] > 0:
+        out.append("   Toplam boşaltılan: ", style="grey70")
+        out.append(f"{human_size(hist['total_freed'])}", style="bold bright_green")
+        out.append(f"   ({hist['count']} işlem)\n", style="grey62")
+        if hist["last_ts"]:
+            out.append(f"   Son işlem: {hist['last_ts']}\n", style="grey62")
+        for e in hist["recent"]:
+            name = os.path.basename(e["path"].rstrip("\\/")) or e["path"]
+            out.append(f"     {human_size(e['size']):>9}  ", style="cyan")
+            out.append(f"{name[:40]}\n", style="grey70")
+    else:
+        out.append("   Henüz temizlik kaydı yok\n", style="grey50")
+
+    out.append("\n  ", style="grey50")
+    out.append("[C]", style="bright_cyan"); out.append(" hızlı temizlik   ", style="grey70")
+    out.append("[/]", style="bright_cyan"); out.append(" komutlar   ", style="grey70")
+    out.append("[S]", style="bright_cyan"); out.append(" canlı durum   ", style="grey70")
+    out.append("[Q]", style="bright_cyan"); out.append(" çıkış\n", style="grey70")
+    return Group(out)
+
+
 # ---------- Optimize actions (mode: optimize) ----------
 @dataclass
 class OptAction:
@@ -1824,6 +1963,7 @@ def palette_commands() -> List[dict]:
     tr = LANG == "tr"
     def d(en, tr_): return tr_ if tr else en
     return [
+        {"name": "dashboard", "desc": d("System overview, cleanup analysis & history", "Sistem özeti, temizlik analizi ve geçmiş"), "action": "view:dashboard"},
         {"name": "analyze",   "desc": d("Browse the filesystem with live sizes", "Dosya sistemini canlı boyutlarla gez"),     "action": "view:analyze-fs"},
         {"name": "categories","desc": d("Disk usage by category",                "Kategoriye göre disk dağılımı"),             "action": "view:cats"},
         {"name": "clean",     "desc": d("Review safe cleanup categories",        "Güvenli temizlik kategorilerini incele"),    "action": "view:clean"},
@@ -2268,6 +2408,7 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
 
     # Top banner — title reflects the current view
     title = {
+        "dashboard": "wmole · Gösterge Paneli",
         "cats":      T("title_analyze"),
         "items":     T("title_inside", name=view.category.title) if view.category else T("title_analyze"),
         "status":    T("title_status"),
@@ -2285,7 +2426,9 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
     tag_style = "bold red on grey15" if permanent_mode else ("bold yellow" if dry_run else "grey70")
     header.append("   " + "  ".join(mode_tags), style=tag_style)
     header.append("\n")
-    if view.kind == "cats":
+    if view.kind == "dashboard":
+        header.append("Sistem durumu, temizlik analizi ve geçmiş — [C] hızlı temizlik · [/] komutlar", style="grey70")
+    elif view.kind == "cats":
         header.append(T("hint_cats"), style="grey70")
     elif view.kind == "items":
         if view.category and view.category.key.startswith("fs:"):
@@ -2302,7 +2445,12 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
         header.append(T("hint_help"), style="grey70")
 
     # Body
-    if view.kind == "help":
+    palette_limit = (palette_visible_rows(console.size.height or 30) if palette is not None else 12)
+    if view.kind == "dashboard":
+        body = render_dashboard(scanner)
+        rows_for_pad = 0
+        rows = []
+    elif view.kind == "help":
         body = render_help(view.scroll)
         rows_for_pad = 0
         rows = []
@@ -2652,10 +2800,8 @@ def run_first_launch_quick_clean() -> None:
     Runs once; a config flag prevents it from prompting on every start.
     """
     cfg = load_config()
-    if cfg.get("quick_clean_done"):
+    if cfg.get("quick_clean_v2_done"):
         return
-    # Mark up front so an interrupted run never re-prompts forever.
-    _save_config_key("quick_clean_done", True)
 
     title = "wmole · İlk Açılış Temizliği"
     whitelist = load_whitelist()
@@ -2685,6 +2831,7 @@ def run_first_launch_quick_clean() -> None:
         total = report["total"]
 
         if not targets or total <= 0:
+            _save_config_key("quick_clean_v2_done", True)
             done = Text("\n  ✓ Temizlenecek fazla veri bulunamadı. Sistem temiz.\n", style="bold green")
             live.update(Panel(done, title=title, border_style="green", padding=(1, 2)))
             time.sleep(1.4)
@@ -2729,6 +2876,8 @@ def run_first_launch_quick_clean() -> None:
             else:
                 k = (read_key() or "").lower()
                 choice = "clean" if k in ("e", "y") else "skip"
+        # Decision made — record it so we don't prompt again next launch.
+        _save_config_key("quick_clean_v2_done", True)
         if choice == "skip":
             return
 
@@ -2785,7 +2934,18 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
     whitelist = load_whitelist()
     cfg = load_config()
     analyze_start = start_path or Path(str(cfg.get("analyze_start_path", USER))).expanduser()
-    profile = "purge" if initial_view == "purge" else ("installers" if initial_view in ("installer", "installers") else ("idle" if initial_view == "analyze" else "full"))
+    landing_dashboard = (initial_view == "analyze" and start_path is None)
+    if initial_view == "purge":
+        profile = "purge"
+    elif initial_view in ("installer", "installers"):
+        profile = "installers"
+    elif landing_dashboard:
+        # Dashboard estimates reclaimable space from a safe clean scan.
+        profile = "clean"
+    elif initial_view == "analyze":
+        profile = "idle"
+    else:
+        profile = "full"
     scanner = Scanner(whitelist=whitelist, profile=profile, use_cache=use_cache)
     threading.Thread(target=scanner.run, daemon=True).start()
 
@@ -2811,6 +2971,8 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
         view_stack = [View(title="Purge Artifacts", kind="cats")]
     elif initial_view in ("installer", "installers"):
         view_stack = [View(title="Installers", kind="cats")]
+    elif landing_dashboard:
+        view_stack = [View(title="Gösterge Paneli", kind="dashboard")]
     else:
         view_stack = [View(title=f"Analyze · {analyze_start}", kind="items", category=build_fs_category(analyze_start))]
     cursor = 0
@@ -2879,7 +3041,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     break
                 time.sleep(0.05)
                 now = time.time()
-                active = (not scanner.done) or view.kind == "status"
+                active = (not scanner.done) or view.kind in ("status", "dashboard")
                 if should_redraw(last_draw, now, scanner_active=active):
                     live.update(render(scanner, view, cursor, msg, use_trash, dry_run, apps_cache, opt_cache,
                                    palette=(palette_query, palette_cursor) if palette_open else None))
@@ -2905,7 +3067,12 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                         cmd = rows_p[palette_cursor]
                         palette_open = False; palette_query = ""; palette_cursor = 0
                         action = cmd["action"]
-                        if action == "view:analyze-fs":
+                        if action == "view:dashboard":
+                            profile = "clean"
+                            scanner = Scanner(whitelist=whitelist, profile="clean", use_cache=use_cache)
+                            threading.Thread(target=scanner.run, daemon=True).start()
+                            view_stack = [View(title="Gösterge Paneli", kind="dashboard")]; cursor = 0
+                        elif action == "view:analyze-fs":
                             profile = "idle"
                             scanner = Scanner(whitelist=whitelist, profile="idle")
                             threading.Thread(target=scanner.run, daemon=True).start()
@@ -3145,6 +3312,18 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     msg = f"Review leftovers before deleting. Registry candidates: {len(reg_leftovers)}."
                 else:
                     msg = f"No obvious file leftovers. Registry candidates: {len(reg_leftovers)}."
+            elif up in ("C", "D") and view.kind == "dashboard":
+                # Quick clean straight from the dashboard: confirm + delete the
+                # safe clean-scan selections. Honors the trash/permanent toggle.
+                if not scanner.done:
+                    msg = "Tarama sürüyor — birazdan tekrar deneyin."
+                else:
+                    msg = confirm_delete(live, scanner, view, cursor,
+                                         use_trash=use_trash,
+                                         dry_run=dry_run, apps=apps_cache, opt=opt_cache)
+            elif up == "S" and view.kind == "dashboard":
+                view_stack.append(View(title="Status", kind="status"))
+                cursor = 0
             elif up == "D" and view.kind in ("cats", "items"):
                 # `D` honors the current trash/permanent toggle (K).
                 msg = confirm_delete(live, scanner, view, cursor,

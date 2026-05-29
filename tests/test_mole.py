@@ -238,7 +238,7 @@ class WmoleBehaviorTests(unittest.TestCase):
             mock.patch.object(mole, "Live", return_value=fake_live),
             mock.patch.object(mole, "build_fs_category", return_value=empty_category),
             mock.patch.object(mole, "load_whitelist", return_value=[]),
-            mock.patch.object(mole, "load_config", return_value={}),
+            mock.patch.object(mole, "load_config", return_value={"quick_clean_done": True}),
             mock.patch.object(mole, "free_space_gb", return_value=18.1),
             mock.patch.object(mole.os, "system"),
             mock.patch.object(mole.msvcrt, "kbhit", return_value=True),

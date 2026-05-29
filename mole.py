@@ -90,7 +90,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -2634,6 +2634,136 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
     return msg
 
 
+def _save_config_key(key: str, value) -> None:
+    """Persist a single key into the user config without disturbing the rest."""
+    try:
+        cfg = load_config()
+        cfg[key] = value
+        WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def run_first_launch_quick_clean() -> None:
+    """First-launch flow: quick-scan safe cache/temp categories, show what was
+    detected, and—only after the user confirms—send it to the Recycle Bin.
+
+    Runs once; a config flag prevents it from prompting on every start.
+    """
+    cfg = load_config()
+    if cfg.get("quick_clean_done"):
+        return
+    # Mark up front so an interrupted run never re-prompts forever.
+    _save_config_key("quick_clean_done", True)
+
+    title = "wmole · İlk Açılış Temizliği"
+    whitelist = load_whitelist()
+    scanner = Scanner(whitelist=whitelist, profile="clean", use_cache=True)
+    threading.Thread(target=scanner.run, daemon=True).start()
+
+    spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    fi = 0
+    with Live(console=console, refresh_per_second=12, screen=True) as live:
+        # ── Quick scan phase ──
+        while not scanner.done:
+            body = Text()
+            body.append("\n  ")
+            body.append(spin[fi % len(spin)], style="bright_cyan")
+            body.append("  Hızlı tarama yapılıyor…  ", style="bold white")
+            body.append((scanner.status or "")[:48], style="grey62")
+            partial = sum(c.total for c in scanner.categories)
+            body.append(f"\n\n  Şimdiye dek bulunan: {human_size(partial)}\n", style="green")
+            live.update(Panel(body, title=title, border_style="cyan", padding=(1, 2)))
+            fi += 1
+            time.sleep(0.08)
+
+        # ── Build summary of safe, deletable targets ──
+        report = collect_selected_targets(scanner.categories, estimated=False)
+        targets = [it for c in scanner.categories for it in c.items
+                   if it.selected and not it.deleted and not is_protected_path(it.path)]
+        total = report["total"]
+
+        if not targets or total <= 0:
+            done = Text("\n  ✓ Temizlenecek fazla veri bulunamadı. Sistem temiz.\n", style="bold green")
+            live.update(Panel(done, title=title, border_style="green", padding=(1, 2)))
+            time.sleep(1.4)
+            return
+
+        cat_totals = []
+        for c in scanner.categories:
+            ct = sum(it.size for it in c.items
+                     if it.selected and not it.deleted and not is_protected_path(it.path))
+            if ct > 0:
+                cat_totals.append((c.title, ct))
+        cat_totals.sort(key=lambda x: x[1], reverse=True)
+
+        body = Text()
+        body.append("\n  Tespit edilen fazla veri: ", style="white")
+        body.append(human_size(total), style="bold bright_green")
+        body.append(f"   ({len(targets)} öğe)\n\n", style="grey62")
+        for ttl, ct in cat_totals[:8]:
+            body.append(f"   • {ttl[:28]:<28}", style="grey85")
+            body.append(f"{human_size(ct):>10}\n", style="cyan")
+        if len(cat_totals) > 8:
+            body.append(f"   … +{len(cat_totals) - 8} kategori daha\n", style="grey50")
+        body.append("\n  Seçilen öğeler Geri Dönüşüm Kutusu'na taşınacak (geri alınabilir).\n", style="grey62")
+        body.append("\n  [", style="grey50"); body.append("E", style="bold bright_green")
+        body.append("] Temizle     ", style="white")
+        body.append("[", style="grey50"); body.append("H", style="bold red")
+        body.append("] Atla", style="white")
+        live.update(Panel(body, title=title, border_style="cyan", padding=(1, 2)))
+
+        # ── Wait for an in-app confirmation key (no native dialog) ──
+        choice = None
+        while choice is None:
+            if os.name == "nt":
+                if msvcrt.kbhit():
+                    k = read_key().lower()
+                    if k in ("e", "y"):
+                        choice = "clean"
+                    elif k in ("h", "n", "q", "\x1b"):
+                        choice = "skip"
+                else:
+                    time.sleep(0.05)
+            else:
+                k = (read_key() or "").lower()
+                choice = "clean" if k in ("e", "y") else "skip"
+        if choice == "skip":
+            return
+
+        # ── Delete with a live progress bar ──
+        ok = err = 0
+        freed = 0
+        n = len(targets)
+        for i, it in enumerate(targets):
+            e = delete_path(it.path, use_trash=True, dry_run=False, known_size=it.size)
+            if e:
+                err += 1
+            else:
+                ok += 1
+                freed += it.size
+            if i % 3 == 0 or i == n - 1:
+                bar_w = 40
+                filled = int(bar_w * (i + 1) / n)
+                pbody = Text()
+                pbody.append(f"\n  Temizleniyor…  {i + 1}/{n}\n\n", style="bold white")
+                pbody.append("  [" + "█" * filled + "·" * (bar_w - filled) + "]\n", style="bright_cyan")
+                pbody.append(f"\n  Boşaltıldı: {human_size(freed)}", style="green")
+                live.update(Panel(pbody, title=title, border_style="cyan", padding=(1, 2)))
+
+        res = Text()
+        res.append("\n  ✓ Tamamlandı. ", style="bold green")
+        res.append(human_size(freed), style="bold bright_green")
+        res.append(" boşaltıldı  ", style="white")
+        res.append(f"({ok} öğe", style="grey62")
+        if err:
+            res.append(f", {err} hata", style="red")
+        res.append(")\n", style="grey62")
+        live.update(Panel(res, title=title, border_style="green", padding=(1, 2)))
+        time.sleep(1.6)
+
+
 # ---------- Main loop ----------
 def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
             use_cache: bool = True) -> None:
@@ -2642,6 +2772,13 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
         try:
             import ctypes
             ctypes.windll.kernel32.SetConsoleTitleW("wmole · disk cleaner")
+        except Exception:
+            pass
+
+    # First launch: offer a one-time quick cleanup before the main UI loads.
+    if initial_view == "analyze" and start_path is None:
+        try:
+            run_first_launch_quick_clean()
         except Exception:
             pass
 

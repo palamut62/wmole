@@ -30,6 +30,39 @@ class WmoleBehaviorTests(unittest.TestCase):
             # newest-first ordering
             self.assertEqual(hist["recent"][0]["path"], "C:\\b\\tmp")
 
+    def test_trash_paths_batch_sends_all_paths_in_one_call(self):
+        calls = []
+
+        def fake_send2trash(arg):
+            calls.append(arg)
+
+        paths = [Path(r"C:\a\cache"), Path(r"C:\b\tmp")]
+        with mock.patch.object(mole, "send2trash", fake_send2trash):
+            res = mole.trash_paths_batch(paths, sizes={str(paths[0]): 100, str(paths[1]): 5})
+
+        # One batched call carrying both paths as a list.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], [str(paths[0]), str(paths[1])])
+        self.assertEqual(res[str(paths[0])], None)
+        self.assertEqual(res[str(paths[1])], None)
+
+    def test_trash_paths_batch_falls_back_per_path_on_batch_failure(self):
+        attempts = []
+
+        def fake_send2trash(arg):
+            attempts.append(arg)
+            if isinstance(arg, list):
+                raise OSError("batch boom")
+            if arg.endswith("bad"):
+                raise OSError("nope")
+
+        paths = [Path(r"C:\good"), Path(r"C:\bad")]
+        with mock.patch.object(mole, "send2trash", fake_send2trash):
+            res = mole.trash_paths_batch(paths)
+
+        self.assertIsNone(res[str(paths[0])])
+        self.assertIn("trash:", res[str(paths[1])])
+
     def test_render_dashboard_handles_missing_scanner(self):
         with mock.patch.object(mole, "OP_LOG_FILE", Path("does-not-exist.log")):
             group = mole.render_dashboard(scanner=None)

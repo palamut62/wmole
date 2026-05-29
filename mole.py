@@ -90,7 +90,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.3.7"
+__version__ = "0.3.8"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -555,6 +555,45 @@ def delete_path(path: Path, use_trash: bool, dry_run: bool, known_size: int = 0)
     except Exception as e:
         log_operation("delete-permanent", path, size=size, result=str(e))
         return str(e)
+
+
+def trash_paths_batch(paths: List[Path],
+                      sizes: Optional[Dict[str, int]] = None) -> Dict[str, Optional[str]]:
+    """Send many paths to the Recycle Bin in a single IFileOperation batch.
+
+    send2trash accepts a list and processes it in one COM operation, which is
+    dramatically faster than one call per path. Returns {str(path): error|None}.
+    On batch failure, falls back to per-path so one bad entry can't sink the
+    whole chunk. `sizes` (keyed by str(path)) is logged so cleanup history can
+    report freed bytes."""
+    result: Dict[str, Optional[str]] = {}
+    if not paths:
+        return result
+    sizes = sizes or {}
+    if send2trash is None:
+        msg = "recycle bin unavailable (send2trash not installed)"
+        for p in paths:
+            log_operation("delete-blocked", p, result=msg)
+            result[str(p)] = msg
+        return result
+    try:
+        send2trash([str(p) for p in paths])
+        for p in paths:
+            log_operation("delete-trash", p, size=sizes.get(str(p), 0), result="ok")
+            result[str(p)] = None
+        return result
+    except Exception:
+        # Batch failed — isolate the culprit by retrying individually.
+        for p in paths:
+            try:
+                send2trash(str(p))
+                log_operation("delete-trash", p, size=sizes.get(str(p), 0), result="ok")
+                result[str(p)] = None
+            except Exception as e:
+                msg = f"trash: {e}"
+                log_operation("delete-trash", p, size=sizes.get(str(p), 0), result=msg)
+                result[str(p)] = msg
+        return result
 
 
 # ---------- Model ----------
@@ -2679,58 +2718,75 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
     ok = err = 0
     start_time = time.time()
 
-    for idx, it in enumerate(targets):
-        # ── Animated progress during deletion ──
-        pct_done = (idx / total_count) * 100 if total_count > 0 else 100
+    # Render the heavy TUI background ONCE — re-rendering it per item is what
+    # made deletion crawl (each render samples psutil cpu/health with blocking
+    # intervals). During deletion we only refresh the lightweight progress panel.
+    bg = render(scanner, view, cursor, "", use_trash, dry_run, apps, opt)
+    spin_frames = ["◜", "◝", "◞", "◟"]
+
+    def draw_progress(done: int, last_path: str, force: bool = False) -> None:
+        pct_done = (done / total_count) * 100 if total_count > 0 else 100
         bar_w = 30
-        filled = int(bar_w * idx / total_count) if total_count > 0 else bar_w
+        filled = int(bar_w * done / total_count) if total_count > 0 else bar_w
         progress_bar = Text()
         progress_bar.append("[" + "█" * filled + "·" * (bar_w - filled) + "]", style="bright_cyan")
-        progress_bar.append(f" {idx}/{total_count}", style="white")
+        progress_bar.append(f" {done}/{total_count}", style="white")
         progress_bar.append(f"  {pct_done:5.1f}%", style="bright_cyan")
-
-        # Show elapsed time
         elapsed = time.time() - start_time
         elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{elapsed/60:.1f}m"
-
-        # Current item display with spinner-like effect based on idx
-        spin_frames = ["◜", "◝", "◞", "◟"]
-        spin = spin_frames[idx % 4]
-        disp = str(it.path)
+        disp = last_path
         if len(disp) > 65:
             disp = "…" + disp[-64:]
         current_item = Text()
-        current_item.append(f"\n  {spin} Deleting: ", style="yellow")
+        current_item.append(f"\n  {spin_frames[done % 4]} Deleting: ", style="yellow")
         current_item.append(disp, style="bold white")
-        current_item.append(f"  ({human_size(it.size)})", style="grey62")
-
-        # Stats line
         stats_line = Text()
         stats_line.append(f"\n  ✓ {ok} done", style="bright_green")
         if err > 0:
             stats_line.append(f"  ✗ {err} errors", style="red")
         stats_line.append(f"  ⏱ {elapsed_str}", style="grey62")
+        live.update(Group(bg, Panel(
+            Group(progress_bar, current_item, stats_line),
+            title=T("confirm_title"), title_align="center",
+            border_style="cyan", padding=(1, 2),
+        )))
 
-        live.update(Group(
-            render(scanner, view, cursor, "", use_trash, dry_run, apps, opt),
-            Panel(
-                Group(progress_bar, current_item, stats_line),
-                title=T("confirm_title"),
-                title_align="center",
-                border_style="cyan",
-                padding=(1, 2),
-            )
-        ))
-
-        e = delete_path(it.path, use_trash=use_trash, dry_run=dry_run, known_size=it.size)
-        if e is None:
-            if not dry_run:
-                it.deleted = True
-                it.selected = False
-            ok += 1
-        else:
-            it.error = e
-            err += 1
+    last_ui = 0.0
+    if use_trash and not dry_run:
+        # Fast path: batch paths to the Recycle Bin in chunks (one COM op each).
+        CHUNK = 20
+        done = 0
+        for start in range(0, total_count, CHUNK):
+            chunk = targets[start:start + CHUNK]
+            res = trash_paths_batch([it.path for it in chunk],
+                                    sizes={str(it.path): it.size for it in chunk})
+            for it in chunk:
+                e = res.get(str(it.path))
+                if e is None:
+                    it.deleted = True
+                    it.selected = False
+                    ok += 1
+                else:
+                    it.error = e
+                    err += 1
+                done += 1
+            draw_progress(done, str(chunk[-1].path), force=True)
+    else:
+        # Permanent / dry-run path stays per-item, but UI updates are throttled.
+        for idx, it in enumerate(targets):
+            now = time.time()
+            if now - last_ui > 0.1 or idx == 0:
+                draw_progress(idx, str(it.path))
+                last_ui = now
+            e = delete_path(it.path, use_trash=use_trash, dry_run=dry_run, known_size=it.size)
+            if e is None:
+                if not dry_run:
+                    it.deleted = True
+                    it.selected = False
+                ok += 1
+            else:
+                it.error = e
+                err += 1
 
     elapsed_total = time.time() - start_time
     elapsed_total_str = f"{elapsed_total:.1f}s" if elapsed_total < 60 else f"{elapsed_total/60:.1f}m"
@@ -2760,7 +2816,7 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
         # Pulsing effect on completion
         border_styles = ["bright_green", "green", "bright_green", "green", "bright_green", "green", "cyan", "bright_green"]
         live.update(Group(
-            render(scanner, view, cursor, "", use_trash, dry_run, apps, opt),
+            bg,
             Panel(
                 Group(comp_bar, result_line),
                 title=T("confirm_title") + " — " + ("✓" if err == 0 else "!"),
@@ -2881,25 +2937,31 @@ def run_first_launch_quick_clean() -> None:
         if choice == "skip":
             return
 
-        # ── Delete with a live progress bar ──
+        # ── Delete in Recycle-Bin batches (one COM op per chunk = fast) ──
         ok = err = 0
         freed = 0
         n = len(targets)
-        for i, it in enumerate(targets):
-            e = delete_path(it.path, use_trash=True, dry_run=False, known_size=it.size)
-            if e:
-                err += 1
-            else:
-                ok += 1
-                freed += it.size
-            if i % 3 == 0 or i == n - 1:
-                bar_w = 40
-                filled = int(bar_w * (i + 1) / n)
-                pbody = Text()
-                pbody.append(f"\n  Temizleniyor…  {i + 1}/{n}\n\n", style="bold white")
-                pbody.append("  [" + "█" * filled + "·" * (bar_w - filled) + "]\n", style="bright_cyan")
-                pbody.append(f"\n  Boşaltıldı: {human_size(freed)}", style="green")
-                live.update(Panel(pbody, title=title, border_style="cyan", padding=(1, 2)))
+        done = 0
+        CHUNK = 20
+        for start in range(0, n, CHUNK):
+            chunk = targets[start:start + CHUNK]
+            res = trash_paths_batch([it.path for it in chunk],
+                                    sizes={str(it.path): it.size for it in chunk})
+            for it in chunk:
+                if res.get(str(it.path)) is None:
+                    ok += 1
+                    freed += it.size
+                    it.deleted = True
+                else:
+                    err += 1
+                done += 1
+            bar_w = 40
+            filled = int(bar_w * done / n) if n else bar_w
+            pbody = Text()
+            pbody.append(f"\n  Temizleniyor…  {done}/{n}\n\n", style="bold white")
+            pbody.append("  [" + "█" * filled + "·" * (bar_w - filled) + "]\n", style="bright_cyan")
+            pbody.append(f"\n  Boşaltıldı: {human_size(freed)}", style="green")
+            live.update(Panel(pbody, title=title, border_style="cyan", padding=(1, 2)))
 
         res = Text()
         res.append("\n  ✓ Tamamlandı. ", style="bold green")

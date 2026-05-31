@@ -400,7 +400,7 @@
           MIT License
         </a>{" "}
         <br class="sm:hidden" />
-        • v0.3.7 • Python • PyInstaller • Inno Setup • Rich TUI
+        • v0.3.8 • Python • PyInstaller • Inno Setup • Rich TUI
       </footer>
     </main>
   </div>
@@ -496,39 +496,39 @@
               <div>
                 <div class="flex items-center gap-2 flex-wrap">
                   <i data-lucide="tag" class="w-3.5 h-3.5 text-muted-foreground"></i>
-                  <span class="font-semibold text-foreground">v0.3.3</span>
+                  <span class="font-semibold text-foreground">v0.3.8</span>
                   <span class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
                     Latest Release
                   </span>
                 </div>
                 <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
                   <i data-lucide="calendar" class="w-3 h-3"></i>
-                  May 25, 2026
+                  May 29, 2026
                 </div>
               </div>
             </div>
             <a
-              href="https://github.com/palamut62/wmole/releases/download/v0.3.3/wmole-0.3.3-setup.exe"
+              href="https://github.com/palamut62/wmole/releases/download/v0.3.8/wmole-0.3.8-setup.exe"
               class="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity self-start sm:self-auto"
             >
               <i data-lucide="download" class="w-3.5 h-3.5"></i>
-              Download Setup v0.3.3
+              Download Setup v0.3.8
             </a>
           </div>
 
           <div class="px-4 sm:px-6 py-4 sm:py-5 space-y-4 sm:space-y-5">
-            <h2 class="text-lg font-semibold text-foreground">Animated Operations & UI Freeze Fixes</h2>
+            <h2 class="text-lg font-semibold text-foreground">Performance: cleanup is now much faster</h2>
 
             <div>
               <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-1.5">Highlights</h3>
               <ul class="space-y-1 text-sm text-muted-foreground">
                 <li class="flex items-start gap-2">
                   <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
-                  <strong>Delete Progress Animation</strong>: Real-time progress bar, spinner, elapsed time counter, and completion pulse effect during bulk file deletions.
+                  <strong>Batch delete</strong>: Items are moved to the Recycle Bin in groups of 20 via a single <code>IFileOperation</code> call instead of one by one — a big speedup across many cache/temp folders.
                 </li>
                 <li class="flex items-start gap-2">
                   <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
-                  <strong>UI Freeze Elimination</strong>: Fixed blocking operations during directory navigation, large file scanning, and section transitions — all now show live progress.
+                  <strong>Render bottleneck removed</strong>: The background is drawn once and only a lightweight progress panel updates during deletion, instead of redrawing the whole TUI per item.
                 </li>
               </ul>
             </div>
@@ -536,12 +536,10 @@
             <div>
               <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Features</h3>
               <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
-                <li><strong>Delete Animation Panel:</strong> Per-item spinner, filled progress bar, success/error counter, and elapsed time display during confirmation-based deletions.</li>
-                <li><strong>Directory Open Progress:</strong> Large directories (50+ items) now show a live progress bar while enumerating contents instead of freezing.</li>
-                <li><strong>Large File Scan Progress:</strong> Pressing <code>G</code> now displays real-time scanned-file count with found-file tally instead of silent blocking.</li>
-                <li><strong>View Transition Animation:</strong> Smooth crossfade-style transition bar when switching between analyzer, purge, uninstall, optimize, and status tabs.</li>
-                <li><strong>Color-Coded Messages:</strong> Success messages render green, errors red, warnings yellow, and cancellations cyan for instant visual feedback.</li>
-                <li><strong>Optimized Delete Path:</strong> Skips redundant directory size recalculation by reusing pre-computed scanner sizes, making deletions faster.</li>
+                <li><strong>Fast cleanup path:</strong> First-run quick clean and the <code>[C]</code>/<code>[D]</code> cleanups from the dashboard now use the batched delete path.</li>
+                <li><strong>Accurate history:</strong> Batch deletes still log size info, so "Total reclaimed" stays correct.</li>
+                <li><strong>Startup Dashboard:</strong> Disk usage, live RAM/CPU/Health gauges, cleanup analysis, and recent cleanup records on launch.</li>
+                <li><strong>One-key actions:</strong> <code>[C]</code> quick clean, <code>[S]</code> live status, <code>[/]</code> command palette, <code>[Q]</code> quit.</li>
               </ul>
             </div>
 
@@ -550,7 +548,7 @@
               <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
                 <li>Compatible with Windows 10/11 64-bit platforms.</li>
                 <li>Python 3.9+ runtime dependencies bundle via PyInstaller executable wrapper.</li>
-                <li>All animations rendered via Rich TUI library with zero external UI dependencies.</li>
+                <li>Safety model unchanged: deletions go to the Recycle Bin and protected paths are blocked.</li>
               </ul>
             </div>
           </div>

@@ -1518,8 +1518,9 @@ def render_dashboard(scanner: Optional["Scanner"] = None,
     When the terminal is short, the cleanup-history list is trimmed so the
     footer and the command-input box below always stay visible (otherwise the
     Live screen crops the input box off the bottom)."""
+    tr = LANG == "tr"
     out = Text()
-    out.append("📊 Gösterge Paneli\n\n", style="bold bright_magenta")
+    out.append(("📊 Gösterge Paneli\n\n" if tr else "📊 Dashboard\n\n"), style="bold bright_magenta")
 
     # ── Disk fullness ──
     if psutil is not None:
@@ -1539,7 +1540,7 @@ def render_dashboard(scanner: Optional["Scanner"] = None,
             out.append(_meter_bar(disk.percent, color=disk_color))
             out.append(f"  {disk.percent:5.1f}%", style=f"bold {disk_color}")
             out.append(f"   {human_size(disk.used)} / {human_size(disk.total)}  ", style="grey62")
-            out.append(f"({human_size(disk.free)} boş)\n", style="green")
+            out.append((f"({human_size(disk.free)} boş)\n" if tr else f"({human_size(disk.free)} free)\n"), style="green")
 
             out.append("  RAM     ", style="grey70")
             out.append(_meter_bar(mem.percent, color=mem_color))
@@ -1550,16 +1551,16 @@ def render_dashboard(scanner: Optional["Scanner"] = None,
             out.append(_meter_bar(cpu, color="bright_blue"))
             out.append(f"  {cpu:5.1f}%\n", style="bold bright_blue")
 
-            out.append("  Sağlık  ", style="grey70")
+            out.append(("  Sağlık  " if tr else "  Health  "), style="grey70")
             out.append(_meter_bar(score, color=score_color))
             out.append(f"  {score}/100\n", style=f"bold {score_color}")
         except Exception:
-            out.append("  (sistem metrikleri okunamadı)\n", style="red")
+            out.append(("  (sistem metrikleri okunamadı)\n" if tr else "  (could not read system metrics)\n"), style="red")
     else:
-        out.append("  psutil yüklü değil — `pip install psutil`\n", style="red")
+        out.append(("  psutil yüklü değil — `pip install psutil`\n" if tr else "  psutil not installed — `pip install psutil`\n"), style="red")
 
     # ── Reclaimable space from the live clean scan ──
-    out.append("\n  Temizlik Analizi\n", style="bold grey85")
+    out.append(("\n  Temizlik Analizi\n" if tr else "\n  Cleanup Analysis\n"), style="bold grey85")
     reclaimable = 0
     items = 0
     scan_done = True
@@ -1575,17 +1576,18 @@ def render_dashboard(scanner: Optional["Scanner"] = None,
         cats = []
     if scanner is not None:
         if not scan_done:
-            out.append("   ⟳ taranıyor…  ", style="bright_yellow")
-            out.append(f"şimdiye dek {human_size(reclaimable)} geri kazanılabilir\n", style="grey70")
+            out.append(("   ⟳ taranıyor…  " if tr else "   ⟳ scanning…  "), style="bright_yellow")
+            out.append((f"şimdiye dek {human_size(reclaimable)} geri kazanılabilir\n" if tr
+                        else f"{human_size(reclaimable)} reclaimable so far\n"), style="grey70")
         elif reclaimable > 0:
-            out.append("   ♻ Geri kazanılabilir: ", style="grey70")
+            out.append(("   ♻ Geri kazanılabilir: " if tr else "   ♻ Reclaimable: "), style="grey70")
             out.append(f"{human_size(reclaimable)}", style="bold bright_green")
-            out.append(f"  ({items} öğe)\n", style="grey62")
-            out.append("   [C] Hızlı temizliği başlat\n", style="bright_cyan")
+            out.append((f"  ({items} öğe)\n" if tr else f"  ({items} items)\n"), style="grey62")
+            out.append(("   [C] Hızlı temizliği başlat\n" if tr else "   [C] Start quick clean\n"), style="bright_cyan")
         else:
-            out.append("   ✓ Temizlenecek fazla veri yok\n", style="green")
+            out.append(("   ✓ Temizlenecek fazla veri yok\n" if tr else "   ✓ Nothing significant to clean\n"), style="green")
     else:
-        out.append("   (analiz bekleniyor)\n", style="grey50")
+        out.append(("   (analiz bekleniyor)\n" if tr else "   (analysis pending)\n"), style="grey50")
 
     # ── Cleanup history ──
     # Everything above already consumed a fixed number of rows; budget the
@@ -1598,25 +1600,25 @@ def render_dashboard(scanner: Optional["Scanner"] = None,
         budget = max_rows - rows_so_far - 2 - 3
         hist_limit = max(0, min(5, budget))
     hist = read_cleanup_history(limit=hist_limit)
-    out.append("\n  Yapılan Temizlikler\n", style="bold grey85")
+    out.append(("\n  Yapılan Temizlikler\n" if tr else "\n  Cleanup History\n"), style="bold grey85")
     if hist["count"] > 0:
-        out.append("   Toplam boşaltılan: ", style="grey70")
+        out.append(("   Toplam boşaltılan: " if tr else "   Total freed: "), style="grey70")
         out.append(f"{human_size(hist['total_freed'])}", style="bold bright_green")
-        out.append(f"   ({hist['count']} işlem)\n", style="grey62")
+        out.append((f"   ({hist['count']} işlem)\n" if tr else f"   ({hist['count']} operations)\n"), style="grey62")
         if hist["last_ts"] and hist_limit > 0:
-            out.append(f"   Son işlem: {hist['last_ts']}\n", style="grey62")
+            out.append((f"   Son işlem: {hist['last_ts']}\n" if tr else f"   Last run: {hist['last_ts']}\n"), style="grey62")
         for e in hist["recent"]:
             name = os.path.basename(e["path"].rstrip("\\/")) or e["path"]
             out.append(f"     {human_size(e['size']):>9}  ", style="cyan")
             out.append(f"{name[:40]}\n", style="grey70")
     else:
-        out.append("   Henüz temizlik kaydı yok\n", style="grey50")
+        out.append(("   Henüz temizlik kaydı yok\n" if tr else "   No cleanup records yet\n"), style="grey50")
 
     out.append("\n  ", style="grey50")
-    out.append("[C]", style="bright_cyan"); out.append(" hızlı temizlik   ", style="grey70")
-    out.append("[/]", style="bright_cyan"); out.append(" komutlar   ", style="grey70")
-    out.append("[S]", style="bright_cyan"); out.append(" canlı durum   ", style="grey70")
-    out.append("[Q]", style="bright_cyan"); out.append(" çıkış", style="grey70")
+    out.append("[C]", style="bright_cyan"); out.append((" hızlı temizlik   " if tr else " quick clean   "), style="grey70")
+    out.append("[/]", style="bright_cyan"); out.append((" komutlar   " if tr else " commands   "), style="grey70")
+    out.append("[S]", style="bright_cyan"); out.append((" canlı durum   " if tr else " live status   "), style="grey70")
+    out.append("[Q]", style="bright_cyan"); out.append((" çıkış" if tr else " quit"), style="grey70")
     return Group(out)
 
 
@@ -2462,7 +2464,7 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
 
     # Top banner — title reflects the current view
     title = {
-        "dashboard": "wmole · Gösterge Paneli",
+        "dashboard": "wmole · Gösterge Paneli" if LANG == "tr" else "wmole · Dashboard",
         "cats":      T("title_analyze"),
         "items":     T("title_inside", name=view.category.title) if view.category else T("title_analyze"),
         "status":    T("title_status"),
@@ -2481,7 +2483,8 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
     header.append("   " + "  ".join(mode_tags), style=tag_style)
     header.append("\n")
     if view.kind == "dashboard":
-        header.append("Sistem durumu, temizlik analizi ve geçmiş — [C] hızlı temizlik · [/] komutlar", style="grey70")
+        header.append(("Sistem durumu, temizlik analizi ve geçmiş — [C] hızlı temizlik · [/] komutlar" if LANG == "tr"
+                       else "System status, cleanup analysis & history — [C] quick clean · [/] commands"), style="grey70")
     elif view.kind == "cats":
         header.append(T("hint_cats"), style="grey70")
     elif view.kind == "items":
@@ -2888,7 +2891,8 @@ def run_first_launch_quick_clean() -> None:
     if cfg.get("quick_clean_v2_done"):
         return
 
-    title = "wmole · İlk Açılış Temizliği"
+    tr = LANG == "tr"
+    title = "wmole · İlk Açılış Temizliği" if tr else "wmole · First-Launch Cleanup"
     whitelist = load_whitelist()
     scanner = Scanner(whitelist=whitelist, profile="clean", use_cache=True)
     threading.Thread(target=scanner.run, daemon=True).start()
@@ -2901,10 +2905,11 @@ def run_first_launch_quick_clean() -> None:
             body = Text()
             body.append("\n  ")
             body.append(spin[fi % len(spin)], style="bright_cyan")
-            body.append("  Hızlı tarama yapılıyor…  ", style="bold white")
+            body.append(("  Hızlı tarama yapılıyor…  " if tr else "  Quick scan in progress…  "), style="bold white")
             body.append((scanner.status or "")[:48], style="grey62")
             partial = sum(c.total for c in scanner.categories)
-            body.append(f"\n\n  Şimdiye dek bulunan: {human_size(partial)}\n", style="green")
+            body.append((f"\n\n  Şimdiye dek bulunan: {human_size(partial)}\n" if tr
+                         else f"\n\n  Found so far: {human_size(partial)}\n"), style="green")
             live.update(Panel(body, title=title, border_style="cyan", padding=(1, 2)))
             fi += 1
             time.sleep(0.08)
@@ -2917,7 +2922,8 @@ def run_first_launch_quick_clean() -> None:
 
         if not targets or total <= 0:
             _save_config_key("quick_clean_v2_done", True)
-            done = Text("\n  ✓ Temizlenecek fazla veri bulunamadı. Sistem temiz.\n", style="bold green")
+            done = Text(("\n  ✓ Temizlenecek fazla veri bulunamadı. Sistem temiz.\n" if tr
+                         else "\n  ✓ Nothing significant to clean. Your system is tidy.\n"), style="bold green")
             live.update(Panel(done, title=title, border_style="green", padding=(1, 2)))
             time.sleep(1.4)
             return
@@ -2931,19 +2937,21 @@ def run_first_launch_quick_clean() -> None:
         cat_totals.sort(key=lambda x: x[1], reverse=True)
 
         body = Text()
-        body.append("\n  Tespit edilen fazla veri: ", style="white")
+        body.append(("\n  Tespit edilen fazla veri: " if tr else "\n  Detected clutter: "), style="white")
         body.append(human_size(total), style="bold bright_green")
-        body.append(f"   ({len(targets)} öğe)\n\n", style="grey62")
+        body.append((f"   ({len(targets)} öğe)\n\n" if tr else f"   ({len(targets)} items)\n\n"), style="grey62")
         for ttl, ct in cat_totals[:8]:
             body.append(f"   • {ttl[:28]:<28}", style="grey85")
             body.append(f"{human_size(ct):>10}\n", style="cyan")
         if len(cat_totals) > 8:
-            body.append(f"   … +{len(cat_totals) - 8} kategori daha\n", style="grey50")
-        body.append("\n  Seçilen öğeler Geri Dönüşüm Kutusu'na taşınacak (geri alınabilir).\n", style="grey62")
+            body.append((f"   … +{len(cat_totals) - 8} kategori daha\n" if tr
+                         else f"   … +{len(cat_totals) - 8} more categories\n"), style="grey50")
+        body.append(("\n  Seçilen öğeler Geri Dönüşüm Kutusu'na taşınacak (geri alınabilir).\n" if tr
+                     else "\n  Selected items go to the Recycle Bin (recoverable).\n"), style="grey62")
         body.append("\n  [", style="grey50"); body.append("E", style="bold bright_green")
-        body.append("] Temizle     ", style="white")
+        body.append(("] Temizle     " if tr else "] Clean     "), style="white")
         body.append("[", style="grey50"); body.append("H", style="bold red")
-        body.append("] Atla", style="white")
+        body.append(("] Atla" if tr else "] Skip"), style="white")
         live.update(Panel(body, title=title, border_style="cyan", padding=(1, 2)))
 
         # ── Wait for an in-app confirmation key (no native dialog) ──
@@ -2987,18 +2995,18 @@ def run_first_launch_quick_clean() -> None:
             bar_w = 40
             filled = int(bar_w * done / n) if n else bar_w
             pbody = Text()
-            pbody.append(f"\n  Temizleniyor…  {done}/{n}\n\n", style="bold white")
+            pbody.append((f"\n  Temizleniyor…  {done}/{n}\n\n" if tr else f"\n  Cleaning…  {done}/{n}\n\n"), style="bold white")
             pbody.append("  [" + "█" * filled + "·" * (bar_w - filled) + "]\n", style="bright_cyan")
-            pbody.append(f"\n  Boşaltıldı: {human_size(freed)}", style="green")
+            pbody.append((f"\n  Boşaltıldı: {human_size(freed)}" if tr else f"\n  Freed: {human_size(freed)}"), style="green")
             live.update(Panel(pbody, title=title, border_style="cyan", padding=(1, 2)))
 
         res = Text()
-        res.append("\n  ✓ Tamamlandı. ", style="bold green")
+        res.append(("\n  ✓ Tamamlandı. " if tr else "\n  ✓ Done. "), style="bold green")
         res.append(human_size(freed), style="bold bright_green")
-        res.append(" boşaltıldı  ", style="white")
-        res.append(f"({ok} öğe", style="grey62")
+        res.append((" boşaltıldı  " if tr else " freed  "), style="white")
+        res.append((f"({ok} öğe" if tr else f"({ok} items"), style="grey62")
         if err:
-            res.append(f", {err} hata", style="red")
+            res.append((f", {err} hata" if tr else f", {err} errors"), style="red")
         res.append(")\n", style="grey62")
         live.update(Panel(res, title=title, border_style="green", padding=(1, 2)))
         time.sleep(1.6)
@@ -3063,7 +3071,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
     elif initial_view in ("installer", "installers"):
         view_stack = [View(title="Installers", kind="cats")]
     elif landing_dashboard:
-        view_stack = [View(title="Gösterge Paneli", kind="dashboard")]
+        view_stack = [View(title=("Gösterge Paneli" if LANG == "tr" else "Dashboard"), kind="dashboard")]
     else:
         view_stack = [View(title=f"Analyze · {analyze_start}", kind="items", category=build_fs_category(analyze_start))]
     cursor = 0
@@ -3162,7 +3170,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                             profile = "clean"
                             scanner = Scanner(whitelist=whitelist, profile="clean", use_cache=use_cache)
                             threading.Thread(target=scanner.run, daemon=True).start()
-                            view_stack = [View(title="Gösterge Paneli", kind="dashboard")]; cursor = 0
+                            view_stack = [View(title=("Gösterge Paneli" if LANG == "tr" else "Dashboard"), kind="dashboard")]; cursor = 0
                         elif action == "view:analyze-fs":
                             profile = "idle"
                             scanner = Scanner(whitelist=whitelist, profile="idle")

@@ -1509,9 +1509,15 @@ def _meter_bar(pct: float, width: int = 28, color: str = "bright_cyan") -> Text:
     return t
 
 
-def render_dashboard(scanner: Optional["Scanner"] = None) -> Group:
+def render_dashboard(scanner: Optional["Scanner"] = None,
+                     max_rows: Optional[int] = None) -> Group:
     """Landing dashboard: disk/PC fullness, system health, cleanup history,
-    and reclaimable-space estimate from the live clean scan."""
+    and reclaimable-space estimate from the live clean scan.
+
+    ``max_rows`` is the vertical budget (terminal rows) reserved for this body.
+    When the terminal is short, the cleanup-history list is trimmed so the
+    footer and the command-input box below always stay visible (otherwise the
+    Live screen crops the input box off the bottom)."""
     out = Text()
     out.append("📊 Gösterge Paneli\n\n", style="bold bright_magenta")
 
@@ -1582,13 +1588,22 @@ def render_dashboard(scanner: Optional["Scanner"] = None) -> Group:
         out.append("   (analiz bekleniyor)\n", style="grey50")
 
     # ── Cleanup history ──
-    hist = read_cleanup_history(limit=5)
+    # Everything above already consumed a fixed number of rows; budget the
+    # remaining space so the history list never pushes the input box off-screen.
+    # Rows used so far + the 3 trailing rows (blank + action line) below.
+    rows_so_far = out.plain.count("\n") + 1
+    hist_limit = 5
+    if max_rows is not None:
+        # 2 header/summary rows + 3 trailing rows are non-history overhead here.
+        budget = max_rows - rows_so_far - 2 - 3
+        hist_limit = max(0, min(5, budget))
+    hist = read_cleanup_history(limit=hist_limit)
     out.append("\n  Yapılan Temizlikler\n", style="bold grey85")
     if hist["count"] > 0:
         out.append("   Toplam boşaltılan: ", style="grey70")
         out.append(f"{human_size(hist['total_freed'])}", style="bold bright_green")
         out.append(f"   ({hist['count']} işlem)\n", style="grey62")
-        if hist["last_ts"]:
+        if hist["last_ts"] and hist_limit > 0:
             out.append(f"   Son işlem: {hist['last_ts']}\n", style="grey62")
         for e in hist["recent"]:
             name = os.path.basename(e["path"].rstrip("\\/")) or e["path"]
@@ -1601,7 +1616,7 @@ def render_dashboard(scanner: Optional["Scanner"] = None) -> Group:
     out.append("[C]", style="bright_cyan"); out.append(" hızlı temizlik   ", style="grey70")
     out.append("[/]", style="bright_cyan"); out.append(" komutlar   ", style="grey70")
     out.append("[S]", style="bright_cyan"); out.append(" canlı durum   ", style="grey70")
-    out.append("[Q]", style="bright_cyan"); out.append(" çıkış\n", style="grey70")
+    out.append("[Q]", style="bright_cyan"); out.append(" çıkış", style="grey70")
     return Group(out)
 
 
@@ -2486,7 +2501,11 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
     # Body
     palette_limit = (palette_visible_rows(console.size.height or 30) if palette is not None else 12)
     if view.kind == "dashboard":
-        body = render_dashboard(scanner)
+        # Reserve rows for header (2), footer, the status line, and the 3-row
+        # command-input panel so the dashboard body never crops the input box.
+        term_h = console.size.height or 30
+        body_budget = max(8, term_h - (2 + len(footer_lines) + 1 + 3))
+        body = render_dashboard(scanner, body_budget)
         rows_for_pad = 0
         rows = []
     elif view.kind == "help":
@@ -2623,6 +2642,16 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
     status = Text()
     line1 = ("  " + scanner.status) if (scanner.status and not scanner.done and view.kind in ("cats", "items")) else ""
     line2 = ("  " + msg) if msg else ""
+    # On the full-screen info views (dashboard/status/help) the two status rows
+    # are always blank and only steal vertical space the input box needs, so
+    # collapse them to a single separator row unless there's a message to show.
+    if view.kind in ("dashboard", "status", "help") and not line1 and not msg:
+        status.append(" ", style="grey50")
+        footer = Text("\n".join(footer_lines), style="bold grey70")
+        if palette is not None:
+            p_query, p_cursor = palette
+            return Group(header, body, status, footer, render_palette(p_query, p_cursor, palette_limit))
+        return Group(header, body, status, footer, render_command_input())
     status.append((line1 or " ") + "\n", style="grey50")
     # Enhanced message display with icon prefix detection for styled output
     if msg:

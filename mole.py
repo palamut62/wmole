@@ -323,6 +323,41 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "help_key":         "H Help",
     },
 }
+def _detect_system_lang() -> str:
+    """Best-effort detection of the OS UI language.
+
+    Returns a key present in STRINGS. Turkish systems map to 'tr'; everything
+    else falls back to 'en' so non-Turkish users get an English interface by
+    default. Any failure falls back to 'en'."""
+    code = ""
+    # 1) Windows: the actual UI language (most reliable on Windows).
+    if os.name == "nt":
+        try:
+            import ctypes
+            for fn in ("GetUserDefaultUILanguage", "GetUserDefaultLCID"):
+                try:
+                    lcid = getattr(ctypes.windll.kernel32, fn)()
+                    import locale as _loc
+                    code = _loc.windows_locale.get(lcid, "")
+                    if code:
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            code = ""
+    # 2) Cross-platform / env fallback.
+    if not code:
+        try:
+            import locale as _loc
+            code = (_loc.getlocale()[0] or "") or os.environ.get("LANG", "")
+        except Exception:
+            code = os.environ.get("LANG", "")
+    code = (code or "").lower()
+    if code.startswith("tr") or "turkish" in code:
+        return "tr"
+    return "en"
+
+
 def _initial_lang() -> str:
     env = os.environ.get("WMOLE_LANG", "").lower()
     if env in STRINGS:
@@ -334,7 +369,8 @@ def _initial_lang() -> str:
             return v
     except Exception:
         pass
-    return "tr"
+    # No explicit preference yet — follow the system UI language (default 'en').
+    return _detect_system_lang()
 
 
 LANG: str = _initial_lang()

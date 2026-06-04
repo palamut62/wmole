@@ -3511,6 +3511,8 @@ def status_payload() -> dict:
         "battery_percent": (bat.percent if bat else None), "power_plugged": (bat.power_plugged if bat else None),
         "device": {"system": sysinfo.system, "release": sysinfo.release, "node": sysinfo.node},
         "temperature_sensors": {k: [{"label": t.label, "current": t.current} for t in v[:3]] for k, v in temps.items()},
+        "cpu_per_core": psutil.cpu_percent(interval=0.0, percpu=True),
+        "cpu_count": psutil.cpu_count(logical=True),
     }
 
 
@@ -3808,6 +3810,267 @@ def _serve_open_path(req: dict, emit, cancel) -> None:
         emit({"id": rid, "ev": "done", "ok": False})
 
 
+def _read_list_file(path: Path) -> list:
+    out = []
+    try:
+        if path_exists(path):
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    out.append(s)
+    except Exception:
+        pass
+    return out
+
+
+def _write_list_file(path: Path, items: list) -> None:
+    WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text("# one path per line\n" + "\n".join(items) + "\n", encoding="utf-8")
+
+
+def _serve_settings_get(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {
+        "config": load_config(),
+        "whitelist": _read_list_file(WHITELIST_FILE),
+        "denylist": _read_list_file(DENYLIST_FILE),
+        "purge_paths": _read_list_file(PURGE_PATHS_FILE),
+    }})
+
+
+def _serve_settings_set(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    files = {"whitelist": WHITELIST_FILE, "denylist": DENYLIST_FILE,
+             "purge_paths": PURGE_PATHS_FILE}
+    for key, fp in files.items():
+        if key in req and isinstance(req[key], list):
+            _write_list_file(fp, [str(x) for x in req[key]])
+    for k, v in (req.get("config") or {}).items():
+        _save_config_key(k, v)
+    _serve_settings_get(req, emit, cancel)
+
+
+def _serve_is_admin(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    admin = False
+    try:
+        import ctypes
+        admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        pass
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {"is_admin": admin}})
+
+
+def _serve_completion_install(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    try:
+        script = powershell_completion_script()
+        WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+        COMPLETION_FILE.write_text(script + "\n", encoding="utf-8")
+        emit({"id": rid, "ev": "done", "ok": True,
+              "payload": {"path": str(COMPLETION_FILE)}})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "completion_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+SCHED_TASK_NAME = "wmole-weekly-clean"
+
+
+def _serve_schedule_get(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    enabled = False
+    detail = ""
+    try:
+        r = subprocess.run(["schtasks", "/query", "/tn", SCHED_TASK_NAME],
+                           capture_output=True, text=True, timeout=15)
+        enabled = r.returncode == 0
+        detail = (r.stdout or "").strip()[:400]
+    except Exception:
+        pass
+    emit({"id": rid, "ev": "done", "ok": True,
+          "payload": {"enabled": enabled, "detail": detail}})
+
+
+def _serve_schedule_set(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    day = req.get("day", "SUN")
+    time_s = req.get("time", "20:00")
+    exe = sys.executable
+    # serve modunda değil; clean modunu --yes ile çalıştır
+    if getattr(sys, "frozen", False):
+        cmd_str = f'"{exe}" clean --yes'
+    else:
+        cmd_str = f'"{exe}" "{os.path.abspath(__file__)}" clean --yes'
+    try:
+        r = subprocess.run([
+            "schtasks", "/create", "/f", "/tn", SCHED_TASK_NAME,
+            "/sc", "weekly", "/d", day, "/st", time_s, "/tr", cmd_str,
+        ], capture_output=True, text=True, timeout=20)
+        ok = r.returncode == 0
+        emit({"id": rid, "ev": "done", "ok": ok,
+              "payload": {"message": (r.stdout or r.stderr).strip()}})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "schedule_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _serve_schedule_clear(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    try:
+        r = subprocess.run(["schtasks", "/delete", "/f", "/tn", SCHED_TASK_NAME],
+                           capture_output=True, text=True, timeout=15)
+        emit({"id": rid, "ev": "done", "ok": r.returncode == 0,
+              "payload": {"message": (r.stdout or r.stderr).strip()}})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "schedule_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _startup_entries() -> list:
+    """Windows başlangıç girdileri: Run registry anahtarları + Startup klasörü."""
+    entries = []
+    try:
+        import winreg
+        hives = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKCU"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKLM"),
+        ]
+        for hive, sub, label in hives:
+            try:
+                key = winreg.OpenKey(hive, sub)
+                i = 0
+                while True:
+                    try:
+                        name, val, _ = winreg.EnumValue(key, i)
+                        entries.append({"name": name, "command": val,
+                                        "location": f"{label}\\Run", "enabled": True})
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+            except OSError:
+                pass
+    except Exception:
+        pass
+    startup_dir = USER / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
+    try:
+        if startup_dir.is_dir():
+            for f in startup_dir.iterdir():
+                entries.append({"name": f.name, "command": str(f),
+                                "location": "Startup Folder", "enabled": True})
+    except Exception:
+        pass
+    return entries
+
+
+def _serve_startup_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    for e in _startup_entries():
+        emit({"id": rid, "ev": "item", "path": e["command"], "name": e["name"],
+              "size": 0, "kind": "startup", "location": e["location"],
+              "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_startup_disable(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    name = req.get("name", "")
+    location = req.get("location", "")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    try:
+        if location.endswith("Run"):
+            import winreg
+            hive = winreg.HKEY_CURRENT_USER if location.startswith("HKCU") else winreg.HKEY_LOCAL_MACHINE
+            key = winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+            winreg.DeleteValue(key, name)
+            winreg.CloseKey(key)
+            emit({"id": rid, "ev": "item_result", "path": name, "ok": True})
+        elif location == "Startup Folder":
+            err = delete_path(Path(req.get("path", "")), use_trash=True, dry_run=False)
+            emit({"id": rid, "ev": "item_result", "path": name, "ok": err is None,
+                  "error": err})
+        emit({"id": rid, "ev": "done", "ok": True})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "startup_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _serve_processes_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    procs = []
+    if psutil:
+        for p in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]):
+            try:
+                info = p.info
+                mem = info["memory_info"].rss if info.get("memory_info") else 0
+                procs.append({"pid": info["pid"], "name": info.get("name") or "?",
+                              "mem": mem, "cpu": info.get("cpu_percent") or 0.0})
+            except Exception:
+                continue
+    procs.sort(key=lambda x: x["mem"], reverse=True)
+    for p in procs[:300]:
+        emit({"id": rid, "ev": "item", "path": str(p["pid"]), "name": p["name"],
+              "size": p["mem"], "kind": "process", "pid": p["pid"],
+              "cpu": p["cpu"], "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(procs)}})
+
+
+def _serve_duplicates(req: dict, emit, cancel) -> None:
+    import hashlib
+    rid = req.get("id")
+    roots = [Path(p) for p in req.get("paths", []) if p] or [USER]
+    min_size = int(req.get("min_size", 1024 * 1024))  # 1MB default
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    by_size: dict = {}
+    scanned = 0
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            for fn in files:
+                fp = Path(dirpath) / fn
+                try:
+                    sz = fp.stat().st_size
+                except OSError:
+                    continue
+                if sz >= min_size:
+                    by_size.setdefault(sz, []).append(fp)
+            scanned += 1
+            if scanned % 200 == 0:
+                emit({"id": rid, "ev": "progress", "done": scanned, "total": 0,
+                      "label": dirpath})
+    groups = 0
+    for sz, paths in by_size.items():
+        if len(paths) < 2:
+            continue
+        hashes: dict = {}
+        for fp in paths:
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            try:
+                h = hashlib.md5()
+                with open(fp, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        h.update(chunk)
+                hashes.setdefault(h.hexdigest(), []).append(fp)
+            except OSError:
+                continue
+        for digest, dups in hashes.items():
+            if len(dups) < 2:
+                continue
+            groups += 1
+            for fp in dups:
+                emit({"id": rid, "ev": "item", "path": str(fp), "name": fp.name,
+                      "size": sz, "kind": "duplicate", "group": digest[:8],
+                      "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"groups": groups}})
+
+
 def _serve_handle(req: dict, emit, cancels: dict) -> None:
     """Tek bir isteği işle. emit(event_dict) çağrılır."""
     rid = req.get("id")
@@ -3848,6 +4111,28 @@ def _serve_handle(req: dict, emit, cancels: dict) -> None:
             _serve_drives(req, emit, cancel)
         elif op == "open_path":
             _serve_open_path(req, emit, cancel)
+        elif op == "settings_get":
+            _serve_settings_get(req, emit, cancel)
+        elif op == "settings_set":
+            _serve_settings_set(req, emit, cancel)
+        elif op == "is_admin":
+            _serve_is_admin(req, emit, cancel)
+        elif op == "completion_install":
+            _serve_completion_install(req, emit, cancel)
+        elif op == "schedule_get":
+            _serve_schedule_get(req, emit, cancel)
+        elif op == "schedule_set":
+            _serve_schedule_set(req, emit, cancel)
+        elif op == "schedule_clear":
+            _serve_schedule_clear(req, emit, cancel)
+        elif op == "startup_list":
+            _serve_startup_list(req, emit, cancel)
+        elif op == "startup_disable":
+            _serve_startup_disable(req, emit, cancel)
+        elif op == "processes_list":
+            _serve_processes_list(req, emit, cancel)
+        elif op == "duplicates":
+            _serve_duplicates(req, emit, cancel)
         else:
             emit({"id": rid, "ev": "error", "code": "unknown_op",
                   "message": f"unknown op: {op}"})

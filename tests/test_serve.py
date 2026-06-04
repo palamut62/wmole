@@ -149,5 +149,46 @@ class ServeExtraTest(unittest.TestCase):
             self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
 
 
+class ServeFeatureTest(unittest.TestCase):
+    def test_settings_get(self):
+        events, err = _run_serve([{"id": "s", "op": "settings_get"}])
+        done = [e for e in events if e["id"] == "s" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        for k in ("config", "whitelist", "denylist", "purge_paths"):
+            self.assertIn(k, done[0]["payload"])
+
+    def test_is_admin(self):
+        events, err = _run_serve([{"id": "a", "op": "is_admin"}])
+        done = [e for e in events if e["id"] == "a" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        self.assertIn("is_admin", done[0]["payload"])
+
+    def test_startup_list(self):
+        events, err = _run_serve([{"id": "sl", "op": "startup_list"}])
+        ids = [e for e in events if e["id"] == "sl"]
+        self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+    def test_schedule_get(self):
+        events, err = _run_serve([{"id": "sg", "op": "schedule_get"}])
+        done = [e for e in events if e["id"] == "sg" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        self.assertIn("enabled", done[0]["payload"])
+
+    def test_processes_list(self):
+        events, err = _run_serve([{"id": "pr", "op": "processes_list"}])
+        ids = [e for e in events if e["id"] == "pr"]
+        self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+    def test_settings_set_roundtrip(self):
+        events, err = _run_serve([
+            {"id": "w", "op": "settings_set", "whitelist": ["C:\\test-wl-xyz"]},
+        ])
+        done = [e for e in events if e["id"] == "w" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        self.assertIn("C:\\test-wl-xyz", done[0]["payload"]["whitelist"])
+        # temizle
+        _run_serve([{"id": "c", "op": "settings_set", "whitelist": []}])
+
+
 if __name__ == "__main__":
     unittest.main()

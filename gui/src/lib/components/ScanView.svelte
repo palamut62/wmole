@@ -6,8 +6,12 @@
   import ConfirmModal from "./ConfirmModal.svelte";
   import { toast } from "$lib/toast";
   import { notify } from "$lib/notify";
+  import { t } from "$lib/i18n";
 
   let { mode }: { mode: string } = $props();
+  const titleKey: Record<string, string> = {
+    clean: "Temizle", purge: "Artıklar", installers: "Kurulumlar", categories: "Kategoriler",
+  };
 
   let items = $state<ScanItem[]>([]);
   let scanning = $state(false);
@@ -104,24 +108,24 @@
 
 <div class="scan">
   <div class="toolbar">
-    <h2>{mode}</h2>
+    <h2>{$t(titleKey[mode] ?? mode)}</h2>
     <button onclick={scan} disabled={scanning}
-      >{scanning ? "Taranıyor…" : "Tara"}</button
+      >{scanning ? $t("Taranıyor…") : $t("Tara")}</button
     >
-    <button onclick={() => setAll(true)} disabled={!items.length}>Tümünü Seç</button>
-    <button onclick={() => setAll(false)} disabled={!items.length}>Hiçbiri</button>
+    <button onclick={() => setAll(true)} disabled={!items.length}>{$t("Tümünü Seç")}</button>
+    <button onclick={() => setAll(false)} disabled={!items.length}>{$t("Hiçbiri")}</button>
     {#if categories.length > 1}
       <select onchange={(e) => { const v = (e.target as HTMLSelectElement).value; if (v) selectCategory(v); (e.target as HTMLSelectElement).value = ""; }}>
-        <option value="">Kategori seç…</option>
+        <option value="">{$t("Kategori seç")}…</option>
         {#each categories as c}<option value={c}>{c}</option>{/each}
       </select>
     {/if}
-    <input class="filter" placeholder="filtrele…" bind:value={filter} />
-    <label class="dry"><input type="checkbox" bind:checked={dryRun} /> Dry-run</label>
+    <input class="filter" placeholder={$t("filtrele…")} bind:value={filter} />
+    <label class="dry"><input type="checkbox" bind:checked={dryRun} /> {$t("Dry-run")}</label>
     <button class="danger" onclick={askDelete} disabled={!selected.length}
-      >{dryRun ? "Önizle" : "Sil"}… ({selected.length})</button
+      >{dryRun ? $t("Önizle") : $t("Sil")}… ({selected.length})</button
     >
-    <span class="count">{shown.length}/{items.length} öğe · {selected.length} seçili · {fmt(selectedBytes)}</span>
+    <span class="count">{shown.length}/{items.length} {$t("öğe")} · {selected.length} {$t("seçili")} · {fmt(selectedBytes)}</span>
   </div>
   <div class="list">
     <VirtualList items={shown}>

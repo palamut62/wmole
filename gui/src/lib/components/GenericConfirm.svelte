@@ -16,16 +16,17 @@
     onConfirm: () => void;
     onCancel: () => void;
   } = $props();
+  import { t } from "$lib/i18n";
 </script>
 
 {#if open}
   <div class="backdrop" onclick={onCancel} role="presentation">
     <div class="modal" onclick={(e) => e.stopPropagation()} role="presentation">
-      <h3 class:danger>{title}</h3>
+      <h3 class:danger>{$t(title)}</h3>
       <p>{message}</p>
       <div class="actions">
-        <button class="ghost" onclick={onCancel}>Vazgeç</button>
-        <button class:danger onclick={onConfirm}>{confirmLabel}</button>
+        <button class="ghost" onclick={onCancel}>{$t("Vazgeç")}</button>
+        <button class:danger onclick={onConfirm}>{$t(confirmLabel)}</button>
       </div>
     </div>
   </div>

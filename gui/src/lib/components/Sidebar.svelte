@@ -3,40 +3,41 @@
   let { active, onSelect }: { active: string; onSelect: (view: string) => void } =
     $props();
 
+  // [routeId, icon, trLabel] — routeId yönlendirme için sabit, etiket çevrilir
   const groups = [
-    { label: "General", items: [["Dashboard", "▣"]] },
+    { label: "Genel", items: [["Dashboard", "▣", "Gösterge Paneli"]] },
     {
-      label: "Cleaning",
+      label: "Temizlik",
       items: [
-        ["Analyze", "🔍"],
-        ["Categories", "▦"],
-        ["Clean", "🧹"],
-        ["Purge", "🗑"],
-        ["Installers", "📦"],
-        ["Duplicates", "⧉"],
+        ["Analyze", "🔍", "Gezgin"],
+        ["Categories", "▦", "Kategoriler"],
+        ["Clean", "🧹", "Temizle"],
+        ["Purge", "🗑", "Artıklar"],
+        ["Installers", "📦", "Kurulumlar"],
+        ["Duplicates", "⧉", "Yinelenenler"],
       ],
     },
     {
-      label: "System",
+      label: "Sistem",
       items: [
-        ["Uninstall", "⊟"],
-        ["Optimize", "⚙"],
-        ["Startup", "⏻"],
-        ["Ports", "🔌"],
-        ["Processes", "▤"],
-        ["Maintenance", "🛠"],
+        ["Uninstall", "⊟", "Kaldır"],
+        ["Optimize", "⚙", "Optimize"],
+        ["Startup", "⏻", "Başlangıç"],
+        ["Ports", "🔌", "Portlar"],
+        ["Processes", "▤", "İşlemler"],
+        ["Maintenance", "🛠", "Bakım"],
       ],
     },
-    { label: "Other", items: [["Settings", "⚙"], ["Help", "?"]] },
+    { label: "Diğer", items: [["Settings", "⚙", "Ayarlar"], ["Help", "?", "Yardım"]] },
   ];
 </script>
 
 <nav class="sidebar">
   {#each groups as g}
     <div class="group-label">{$t(g.label)}</div>
-    {#each g.items as [name, icon]}
-      <button class:active={active === name} onclick={() => onSelect(name)}>
-        <span class="icon">{icon}</span>{$t(name)}
+    {#each g.items as [id, icon, label]}
+      <button class:active={active === id} onclick={() => onSelect(id)}>
+        <span class="icon">{icon}</span>{$t(label)}
       </button>
     {/each}
   {/each}

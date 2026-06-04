@@ -4,6 +4,7 @@
   import type { SidecarEvent } from "$lib/types";
   import GenericConfirm from "./GenericConfirm.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface Entry { path: string; name: string; location: string; }
   let items = $state<Entry[]>([]);
@@ -35,9 +36,9 @@
 
 <div class="view">
   <div class="toolbar">
-    <h2>Başlangıç Programları</h2>
-    <button onclick={load} disabled={loading}>{loading ? "…" : "Yenile"}</button>
-    <span class="count">{items.length} girdi</span>
+    <h2>{$t("Başlangıç Programları")}</h2>
+    <button onclick={load} disabled={loading}>{loading ? "…" : $t("Yenile")}</button>
+    <span class="count">{items.length} {$t("girdi")}</span>
   </div>
   <div class="list">
     {#each items as e (e.location + e.name)}
@@ -45,10 +46,10 @@
         <span class="name">{e.name}</span>
         <span class="loc">{e.location}</span>
         <span class="cmd">{e.path}</span>
-        <button class="mini danger" onclick={() => ask(e)}>Kaldır</button>
+        <button class="mini danger" onclick={() => ask(e)}>{$t("Kaldır")}</button>
       </div>
     {/each}
-    {#if !items.length && !loading}<p class="muted">Başlangıç girdisi yok.</p>{/if}
+    {#if !items.length && !loading}<p class="muted">{$t("Başlangıç girdisi yok.")}</p>{/if}
   </div>
 </div>
 

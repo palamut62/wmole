@@ -3,6 +3,7 @@
   import { get } from "svelte/store";
   import "$lib/sidecar"; // listener'ı başlat
   import { theme, applyTheme } from "$lib/theme";
+  import { lang } from "$lib/i18n";
   import TopBar from "$lib/components/TopBar.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import Dashboard from "$lib/components/Dashboard.svelte";
@@ -76,16 +77,19 @@
 {#if showOnboard}
   <div class="ob-backdrop">
     <div class="ob-modal">
-      <h2>wmole'a hoş geldin 🐹</h2>
+      <h2>{$lang === "tr" ? "wmole'a hoş geldin 🐹" : "Welcome to wmole 🐹"}</h2>
       <p>
-        Windows için bakım araç seti. Sol menüden temizlik (Clean/Purge),
-        sistem (Uninstall/Optimize/Ports) ve gelişmiş araçlara (Yinelenenler,
-        Başlangıç, İşlemler) ulaşırsın. Tüm silmeler önce Geri Dönüşüm
-        Kutusu'na gider ve onay penceresiyle korunur.
+        {$lang === "tr"
+          ? "Windows için bakım araç seti. Sol menüden temizlik, sistem ve gelişmiş araçlara ulaşırsın. Tüm silmeler önce Geri Dönüşüm Kutusu'na gider ve onay penceresiyle korunur."
+          : "A maintenance toolkit for Windows. Use the left menu for cleaning, system and advanced tools. All deletes go to the Recycle Bin first and are guarded by a confirmation dialog."}
       </p>
-      <p class="muted">İpucu: Gösterge Paneli'nde "Hızlı Tara → Hızlı Temizle" ile tek tıkla yer aç.</p>
+      <p class="muted">
+        {$lang === "tr"
+          ? 'İpucu: Gösterge Paneli\'nde "Hızlı Tara → Hızlı Temizle" ile tek tıkla yer aç.'
+          : 'Tip: On the Dashboard use "Quick Scan → Quick Clean" to free space in one click.'}
+      </p>
       <div class="ob-actions">
-        <button class="primary" onclick={() => dismissOnboard(true)}>Başla</button>
+        <button class="primary" onclick={() => dismissOnboard(true)}>{$lang === "tr" ? "Başla" : "Start"}</button>
       </div>
     </div>
   </div>

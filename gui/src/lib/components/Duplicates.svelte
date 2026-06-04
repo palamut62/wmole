@@ -5,6 +5,7 @@
   import StatusBar from "./StatusBar.svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface Dup { path: string; name: string; size: number; group: string; selected: boolean; }
   let path = $state("");
@@ -55,11 +56,11 @@
 
 <div class="view">
   <div class="toolbar">
-    <h2>Yinelenen Dosyalar</h2>
-    <input class="pathbox" bind:value={path} placeholder="C:\\Users\\… (boş = ev dizini)" onkeydown={(e) => e.key === "Enter" && scan()} />
-    <button onclick={scan} disabled={scanning}>{scanning ? "Taranıyor…" : "Tara"}</button>
-    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>Sil… ({selected.length})</button>
-    <span class="count">{items.length} kopya · {fmt(selectedBytes)} seçili</span>
+    <h2>{$t("Yinelenen Dosyalar")}</h2>
+    <input class="pathbox" bind:value={path} placeholder="C:\\Users\\…" onkeydown={(e) => e.key === "Enter" && scan()} />
+    <button onclick={scan} disabled={scanning}>{scanning ? $t("Taranıyor…") : $t("Tara")}</button>
+    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>{$t("Sil…")} ({selected.length})</button>
+    <span class="count">{items.length} {$t("kopya")} · {fmt(selectedBytes)} {$t("seçili")}</span>
   </div>
   <p class="hint">≥1MB dosyalar boyut+MD5 ile karşılaştırılır. Aynı renkli grup = aynı içerik. Her gruptan birini saklamanız önerilir.</p>
   <div class="list">

@@ -6,6 +6,7 @@
   import StatusBar from "./StatusBar.svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface Entry {
     path: string;
@@ -133,22 +134,22 @@
 
 <div class="scan">
   <div class="toolbar">
-    <h2>Analyze</h2>
-    <button onclick={() => scan(parent(path))} disabled={scanning || !path}>⬆ Üst</button>
+    <h2>{$t("Gezgin")}</h2>
+    <button onclick={() => scan(parent(path))} disabled={scanning || !path}>{$t("⬆ Üst")}</button>
     <input
       class="pathbox"
       bind:value={path}
       placeholder="C:\\Users\\…"
       onkeydown={(e) => e.key === "Enter" && scan()}
     />
-    <button onclick={() => scan()} disabled={scanning}>{scanning ? "…" : "Tara"}</button>
-    <label class="dry"><input type="checkbox" bind:checked={largeMode} onchange={() => scan()} /> Büyük dosyalar</label>
-    <button onclick={loadDrives}>Sürücüler</button>
-    <button class:active={treemap} onclick={() => (treemap = !treemap)}>Harita</button>
-    <button onclick={() => setAll(true)} disabled={!entries.length}>Tümünü Seç</button>
-    <button onclick={() => setAll(false)} disabled={!entries.length}>Hiçbiri</button>
-    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>Sil… ({selected.length})</button>
-    <span class="count">{entries.length} öğe · {selected.length} seçili · {fmt(selectedBytes)}</span>
+    <button onclick={() => scan()} disabled={scanning}>{scanning ? "…" : $t("Tara")}</button>
+    <label class="dry"><input type="checkbox" bind:checked={largeMode} onchange={() => scan()} /> {$t("Büyük dosyalar")}</label>
+    <button onclick={loadDrives}>{$t("Sürücüler")}</button>
+    <button class:active={treemap} onclick={() => (treemap = !treemap)}>{$t("Harita")}</button>
+    <button onclick={() => setAll(true)} disabled={!entries.length}>{$t("Tümünü Seç")}</button>
+    <button onclick={() => setAll(false)} disabled={!entries.length}>{$t("Hiçbiri")}</button>
+    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>{$t("Sil…")} ({selected.length})</button>
+    <span class="count">{entries.length} {$t("öğe")} · {selected.length} {$t("seçili")} · {fmt(selectedBytes)}</span>
   </div>
 
   {#if showDrives}

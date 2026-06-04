@@ -13,6 +13,7 @@
     onCancel: () => void;
   } = $props();
 
+  import { t } from "$lib/i18n";
   let permanent = $state(false);
   let confirmPermanent = $state(false);
 
@@ -38,30 +39,29 @@
 {#if open}
   <div class="backdrop" onclick={onCancel} role="presentation">
     <div class="modal" onclick={(e) => e.stopPropagation()} role="presentation">
-      <h3>Silme Onayı</h3>
-      <p>{count} öğe · {fmt(bytes)}</p>
+      <h3>{$t("Silme Onayı")}</h3>
+      <p>{count} {$t("öğe")} · {fmt(bytes)}</p>
       <label class="opt">
         <input
           type="checkbox"
           bind:checked={permanent}
           onchange={() => (confirmPermanent = false)}
         />
-        Kalıcı sil (Geri Dönüşüm Kutusu'nu atla)
+        {$t("Kalıcı sil (Geri Dönüşüm Kutusu'nu atla)")}
       </label>
       {#if permanent && confirmPermanent}
         <p class="warn">
-          ⚠ Bu işlem GERİ ALINAMAZ. Onaylamak için tekrar "Kalıcı Sil" butonuna
-          bas.
+          {$t("⚠ Bu işlem GERİ ALINAMAZ. Onaylamak için tekrar \"Kalıcı Sil\" butonuna bas.")}
         </p>
       {/if}
       <div class="actions">
-        <button class="ghost" onclick={onCancel}>Vazgeç</button>
+        <button class="ghost" onclick={onCancel}>{$t("Vazgeç")}</button>
         <button class:danger={permanent} onclick={confirm}>
           {permanent
             ? confirmPermanent
-              ? "Kalıcı Sil (onayla)"
-              : "Kalıcı Sil"
-            : "Geri Dönüşüm Kutusu'na Taşı"}
+              ? $t("Kalıcı Sil (onayla)")
+              : $t("Kalıcı Sil")
+            : $t("Geri Dönüşüm Kutusu'na Taşı")}
         </button>
       </div>
     </div>

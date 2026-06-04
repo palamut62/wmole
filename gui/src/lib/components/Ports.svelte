@@ -5,6 +5,7 @@
   import GenericConfirm from "./GenericConfirm.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface Port {
     path: string;
@@ -65,11 +66,11 @@
 
 <div class="scan">
   <div class="toolbar">
-    <h2>Ports</h2>
-    <label class="dry"><input type="checkbox" bind:checked={allBinds} onchange={load} /> Tüm bind'ler</label>
-    <button onclick={load} disabled={loading}>{loading ? "…" : "Yenile"}</button>
+    <h2>{$t("Portlar")}</h2>
+    <label class="dry"><input type="checkbox" bind:checked={allBinds} onchange={load} /> {$t("Tüm bind'ler")}</label>
+    <button onclick={load} disabled={loading}>{loading ? "…" : $t("Yenile")}</button>
     <button class="danger" onclick={() => (confirmOpen = true)} disabled={!selected.length}>
-      Süreci Kapat ({selected.length})
+      {$t("Süreci Kapat")} ({selected.length})
     </button>
   </div>
   <div class="list">
@@ -83,7 +84,7 @@
       </label>
     {/each}
     {#if !ports.length && !loading}
-      <p class="empty">Dinleyen localhost portu yok (tümü için admin gerekebilir).</p>
+      <p class="empty">{$t("Dinleyen localhost portu yok (tümü için admin gerekebilir).")}</p>
     {/if}
   </div>
 </div>

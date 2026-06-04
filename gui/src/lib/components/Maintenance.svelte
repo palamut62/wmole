@@ -2,6 +2,7 @@
   import { request } from "$lib/sidecar";
   import GenericConfirm from "./GenericConfirm.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   let busy = $state(false);
   let updateOut = $state("");
@@ -30,22 +31,21 @@
 
 <div class="wrap">
   <section class="card">
-    <h3>Güncelleme</h3>
-    <p>GitHub'daki son sürümü kontrol et veya güncellemeyi uygula.</p>
+    <h3>{$t("Güncelleme")}</h3>
+    <p>{$t("GitHub'daki son sürümü kontrol et veya güncellemeyi uygula.")}</p>
     <div class="row">
-      <button onclick={() => checkUpdate(true)} disabled={busy}>Kontrol Et (dry-run)</button>
-      <button onclick={() => checkUpdate(false)} disabled={busy}>Güncelle</button>
+      <button onclick={() => checkUpdate(true)} disabled={busy}>{$t("Kontrol Et (dry-run)")}</button>
+      <button onclick={() => checkUpdate(false)} disabled={busy}>{$t("Güncelle")}</button>
     </div>
   </section>
 
   <section class="card">
-    <h3>wmole Durumunu Kaldır</h3>
+    <h3>{$t("wmole Durumunu Kaldır")}</h3>
     <p>
-      <code>~/.wmole</code> altındaki yapılandırma, log ve cache'i kalıcı olarak siler.
-      Bu işlem geri alınamaz.
+      <code>~/.wmole</code> — {$t("~/.wmole altındaki yapılandırma, log ve cache'i kalıcı olarak siler. Bu işlem geri alınamaz.")}
     </p>
     <button class="danger" onclick={() => (removeConfirm = true)} disabled={busy}>
-      ~/.wmole'u Sil
+      {$t("~/.wmole'u Sil")}
     </button>
   </section>
 

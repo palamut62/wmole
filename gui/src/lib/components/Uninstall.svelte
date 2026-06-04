@@ -5,6 +5,7 @@
   import GenericConfirm from "./GenericConfirm.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface App {
     path: string;
@@ -105,10 +106,10 @@
 
 <div class="scan">
   <div class="toolbar">
-    <h2>Uninstall</h2>
-    <input placeholder="ara…" bind:value={query} onkeydown={(e) => e.key === "Enter" && load()} />
-    <button onclick={load} disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
-    <span class="count">{apps.length} program</span>
+    <h2>{$t("Kaldır")}</h2>
+    <input placeholder={$t("ara…")} bind:value={query} onkeydown={(e) => e.key === "Enter" && load()} />
+    <button onclick={load} disabled={loading}>{loading ? $t("Yükleniyor…") : $t("Listele")}</button>
+    <span class="count">{apps.length} {$t("program")}</span>
   </div>
   <div class="list">
     <VirtualList items={apps} rowHeight={30}>
@@ -116,7 +117,7 @@
         <div class="entry">
           <span class="size">{item.size ? fmt(item.size) : ""}</span>
           <span class="name">{item.name} <em>{item.version}</em></span>
-          <button class="mini danger" onclick={() => askUninstall(item)}>Kaldır</button>
+          <button class="mini danger" onclick={() => askUninstall(item)}>{$t("Kaldır")}</button>
         </div>
       {/snippet}
     </VirtualList>
@@ -125,8 +126,8 @@
   {#if leftovers.length}
     <div class="leftovers">
       <div class="toolbar">
-        <h3>Kalıntılar ({leftovers.length})</h3>
-        <button class="danger" onclick={deleteLeftovers}>Seçili dosyaları sil</button>
+        <h3>{$t("Kalıntılar")} ({leftovers.length})</h3>
+        <button class="danger" onclick={deleteLeftovers}>{$t("Seçili dosyaları sil")}</button>
       </div>
       <div class="list small">
         <VirtualList items={leftovers} rowHeight={24}>

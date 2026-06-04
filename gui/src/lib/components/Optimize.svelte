@@ -5,6 +5,7 @@
   import GenericConfirm from "./GenericConfirm.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface Action {
     path: string; // key
@@ -70,10 +71,10 @@
 
 <div class="scan">
   <div class="toolbar">
-    <h2>Optimize</h2>
-    <label class="dry"><input type="checkbox" bind:checked={dryRun} /> Dry-run (önizleme)</label>
+    <h2>{$t("Optimize")}</h2>
+    <label class="dry"><input type="checkbox" bind:checked={dryRun} /> {$t("Dry-run (önizleme)")}</label>
     <button onclick={run} disabled={!selected.length}>
-      {dryRun ? "Önizle" : "Çalıştır"} ({selected.length})
+      {dryRun ? $t("Önizle") : $t("Çalıştır")} ({selected.length})
     </button>
   </div>
   <div class="list">
@@ -82,8 +83,8 @@
         <input type="checkbox" checked={a.selected} onchange={() => toggle(a)} />
         <span class="title">{a.name}</span>
         <span class="desc">{a.description}</span>
-        {#if a.risk === "high"}<span class="badge">YÜKSEK RİSK</span>{/if}
-        {#if a.requires_admin}<span class="badge admin">ADMIN</span>{/if}
+        {#if a.risk === "high"}<span class="badge">{$t("YÜKSEK RİSK")}</span>{/if}
+        {#if a.requires_admin}<span class="badge admin">{$t("ADMIN")}</span>{/if}
       </label>
     {/each}
   </div>

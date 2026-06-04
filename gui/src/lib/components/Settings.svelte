@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { request } from "$lib/sidecar";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   let whitelist = $state<string[]>([]);
   let denylist = $state<string[]>([]);
@@ -78,35 +79,35 @@
 
 {#snippet listEditor(title: string, items: string[], which: "wl" | "dl" | "pp", val: string, setVal: (v: string) => void, ph: string)}
   <section class="card">
-    <h3>{title}</h3>
+    <h3>{$t(title)}</h3>
     <ul class="paths">
       {#each items as p, i}
         <li><span>{p}</span><button class="mini danger" onclick={() => rm(which, i)}>✕</button></li>
       {/each}
-      {#if !items.length}<li class="muted">Boş</li>{/if}
+      {#if !items.length}<li class="muted">{$t("Boş")}</li>{/if}
     </ul>
     <div class="row">
       <input placeholder={ph} value={val} oninput={(e) => setVal((e.target as HTMLInputElement).value)} onkeydown={(e) => e.key === "Enter" && addTo(which)} />
-      <button onclick={() => addTo(which)}>Ekle</button>
+      <button onclick={() => addTo(which)}>{$t("Ekle")}</button>
     </div>
   </section>
 {/snippet}
 
 <div class="settings">
   <div class="head">
-    <h2>Ayarlar</h2>
-    <button class="primary" onclick={save}>Kaydet</button>
+    <h2>{$t("Ayarlar")}</h2>
+    <button class="primary" onclick={save}>{$t("Kaydet")}</button>
   </div>
 
   <section class="card">
-    <h3>Yönetici Durumu</h3>
-    <p class={isAdmin ? "green" : "muted"}>{isAdmin ? "✓ Yönetici olarak çalışıyor" : "○ Standart kullanıcı — bazı optimize işlemleri admin gerektirir"}</p>
-    {#if !isAdmin}<button onclick={elevate}>Yönetici Olarak Yeniden Başlat</button>{/if}
+    <h3>{$t("Yönetici Durumu")}</h3>
+    <p class={isAdmin ? "green" : "muted"}>{isAdmin ? $t("✓ Yönetici olarak çalışıyor") : $t("○ Standart kullanıcı — bazı optimize işlemleri admin gerektirir")}</p>
+    {#if !isAdmin}<button onclick={elevate}>{$t("Yönetici Olarak Yeniden Başlat")}</button>{/if}
   </section>
 
   <section class="card">
-    <h3>Eşikler</h3>
-    <label class="field">Büyük dosya alt sınırı (MB)
+    <h3>{$t("Eşikler")}</h3>
+    <label class="field">{$t("Büyük dosya alt sınırı (MB)")}
       <input type="number" bind:value={largeMinMb} min="1" />
     </label>
   </section>
@@ -116,24 +117,24 @@
   {@render listEditor("Purge kök yolları", purgePaths, "pp", newPp, (v) => (newPp = v), "C:\\src;D:\\repos")}
 
   <section class="card">
-    <h3>Zamanlanmış Haftalık Temizlik</h3>
-    <p class={schedule.enabled ? "green" : "muted"}>{schedule.enabled ? "✓ Etkin (Windows Task Scheduler)" : "○ Devre dışı"}</p>
+    <h3>{$t("Zamanlanmış Haftalık Temizlik")}</h3>
+    <p class={schedule.enabled ? "green" : "muted"}>{schedule.enabled ? $t("✓ Etkin (Windows Task Scheduler)") : $t("○ Devre dışı")}</p>
     <div class="row">
       <select bind:value={schedDay}>
         {#each [["SUN", "Pazar"], ["MON", "Pazartesi"], ["TUE", "Salı"], ["WED", "Çarşamba"], ["THU", "Perşembe"], ["FRI", "Cuma"], ["SAT", "Cumartesi"]] as [v, l]}
-          <option value={v}>{l}</option>
+          <option value={v}>{$t(l)}</option>
         {/each}
       </select>
       <input type="time" bind:value={schedTime} />
-      <button class="primary" onclick={setSchedule}>Planla</button>
-      {#if schedule.enabled}<button class="danger" onclick={clearSchedule}>Kaldır</button>{/if}
+      <button class="primary" onclick={setSchedule}>{$t("Planla")}</button>
+      {#if schedule.enabled}<button class="danger" onclick={clearSchedule}>{$t("Kaldır")}</button>{/if}
     </div>
   </section>
 
   <section class="card">
-    <h3>PowerShell Tamamlama</h3>
-    <p class="muted">Terminalde <code>wmole</code> için sekme tamamlamasını kur.</p>
-    <button onclick={installCompletion}>Completion Kur</button>
+    <h3>{$t("PowerShell Tamamlama")}</h3>
+    <p class="muted">{$t("PowerShell Tamamlama")} — <code>wmole</code></p>
+    <button onclick={installCompletion}>{$t("Completion Kur")}</button>
   </section>
 </div>
 

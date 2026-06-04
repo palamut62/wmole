@@ -5,6 +5,7 @@
   import VirtualList from "./VirtualList.svelte";
   import GenericConfirm from "./GenericConfirm.svelte";
   import { toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
 
   interface Proc { path: string; name: string; size: number; pid: number; cpu: number; selected: boolean; }
   let procs = $state<Proc[]>([]);
@@ -47,11 +48,11 @@
 
 <div class="view">
   <div class="toolbar">
-    <h2>İşlemler</h2>
-    <input placeholder="filtrele…" bind:value={filter} />
-    <button onclick={load} disabled={loading}>{loading ? "…" : "Yenile"}</button>
-    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>Kapat ({selected.length})</button>
-    <span class="count">{shown.length}/{procs.length} işlem (RAM'e göre)</span>
+    <h2>{$t("İşlemler")}</h2>
+    <input placeholder={$t("filtrele…")} bind:value={filter} />
+    <button onclick={load} disabled={loading}>{loading ? "…" : $t("Yenile")}</button>
+    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>{$t("Kapat")} ({selected.length})</button>
+    <span class="count">{shown.length}/{procs.length} {$t("işlem")}</span>
   </div>
   <div class="list">
     <VirtualList items={shown} rowHeight={26}>

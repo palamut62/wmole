@@ -7,6 +7,7 @@
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
   import { notify } from "$lib/notify";
+  import { t } from "$lib/i18n";
 
   let s = $state<Record<string, any>>({});
   let hist = $state<Record<string, any>>({});
@@ -99,13 +100,13 @@
 </script>
 
 <div class="dash">
-  <h2>Gösterge Paneli</h2>
+  <h2>{$t("Gösterge Paneli")}</h2>
 
   <!-- Metre çubukları -->
   <div class="meters">
     {#each [["Disk", s.disk_percent], ["RAM", s.memory_percent], ["CPU", s.cpu_percent], ["Sağlık", s.health]] as [label, val]}
       <div class="meter">
-        <span class="ml">{label}</span>
+        <span class="ml">{$t(label as string)}</span>
         <div class="bar">
           <div
             class="fill"
@@ -128,7 +129,7 @@
     </div>
     {#if s.cpu_per_core?.length}
       <div class="cores">
-        <span class="ml">Çekirdek</span>
+        <span class="ml">{$t("Çekirdek")}</span>
         {#each s.cpu_per_core as c}
           <div class="core" title="{c.toFixed(0)}%">
             <div class="corefill" style="height:{Math.max(4, c)}%; background:{color(c)}"></div>
@@ -143,21 +144,21 @@
 
   <!-- Temizlik Analizi / Hızlı Temizle -->
   <section class="card">
-    <h3>Temizlik Analizi</h3>
+    <h3>{$t("Temizlik Analizi")}</h3>
     {#if scanning}
-      <p class="muted">⟳ Taranıyor… şimdiye dek {fmt(reclaimable)} geri kazanılabilir</p>
+      <p class="muted">⟳ {$t("Taranıyor…")} {fmt(reclaimable)}</p>
     {:else if scanned && scanItems.length}
       <p>
-        ♻ Geri kazanılabilir: <strong class="green">{fmt(reclaimable)}</strong>
-        <span class="muted">({chosen.length}/{scanItems.length} öğe seçili)</span>
+        ♻ {$t("Geri kazanılabilir:")} <strong class="green">{fmt(reclaimable)}</strong>
+        <span class="muted">({chosen.length}/{scanItems.length} {$t("seçili")})</span>
       </p>
       <div class="row">
         <button class="primary" onclick={() => (confirmOpen = true)} disabled={!chosen.length}>
-          Hızlı Temizle ({chosen.length})
+          {$t("Hızlı Temizle")} ({chosen.length})
         </button>
-        <button onclick={() => setAll(true)}>Tümünü Seç</button>
-        <button onclick={() => setAll(false)}>Hiçbiri</button>
-        <button onclick={quickScan}>Yeniden Tara</button>
+        <button onclick={() => setAll(true)}>{$t("Tümünü Seç")}</button>
+        <button onclick={() => setAll(false)}>{$t("Hiçbiri")}</button>
+        <button onclick={quickScan}>{$t("Yeniden Tara")}</button>
       </div>
       <div class="cleanlist">
         <VirtualList items={scanItems} rowHeight={24}>
@@ -172,20 +173,20 @@
         </VirtualList>
       </div>
     {:else if scanned}
-      <p class="green">✓ Temizlenecek önemli bir şey yok</p>
-      <button onclick={quickScan}>Yeniden Tara</button>
+      <p class="green">{$t("✓ Temizlenecek önemli bir şey yok")}</p>
+      <button onclick={quickScan}>{$t("Yeniden Tara")}</button>
     {:else}
-      <p class="muted">Güvenli temizlik adaylarını tara ve tek tıkla temizle.</p>
-      <button class="primary" onclick={quickScan}>Hızlı Tara</button>
+      <p class="muted">{$t("Güvenli temizlik adaylarını tara ve tek tıkla temizle.")}</p>
+      <button class="primary" onclick={quickScan}>{$t("Hızlı Tara")}</button>
     {/if}
   </section>
 
   <!-- Temizlik Geçmişi -->
   <section class="card">
-    <h3>Yapılan Temizlikler</h3>
+    <h3>{$t("Yapılan Temizlikler")}</h3>
     {#if hist.count > 0}
       <p>
-        Toplam boşaltılan: <strong class="green">{fmt(hist.total_freed)}</strong>
+        {$t("Toplam boşaltılan:")} <strong class="green">{fmt(hist.total_freed)}</strong>
         <span class="muted">({hist.count} işlem · son: {hist.last_ts})</span>
       </p>
       {#if (hist.recent ?? []).length}
@@ -207,7 +208,7 @@
         {/each}
       </ul>
     {:else}
-      <p class="muted">Henüz temizlik kaydı yok.</p>
+      <p class="muted">{$t("Henüz temizlik kaydı yok.")}</p>
     {/if}
   </section>
 </div>

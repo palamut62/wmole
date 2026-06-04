@@ -3548,8 +3548,21 @@ def _serve_scan(req: dict, emit, cancel) -> None:
                           "bytes": result["total_size"]}})
         return
 
+    if mode == "large":
+        target = paths[0] if paths else USER
+        min_large = int(load_config().get("large_file_min_mb", 512)) * 1024 * 1024
+        for f in find_large_files(target, min_large):
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            emit({"id": rid, "ev": "item", "path": str(f["path"]),
+                  "name": Path(f["path"]).name, "size": int(f["size"]),
+                  "kind": "large-file", "selected": False})
+        emit({"id": rid, "ev": "done", "ok": True})
+        return
+
     profile = {"clean": "clean", "purge": "purge",
-               "installers": "installers"}.get(mode, "clean")
+               "installers": "installers", "categories": "full"}.get(mode, "clean")
     scanner = Scanner(whitelist=load_whitelist(), profile=profile,
                       roots=paths or None, use_cache=not req.get("no_cache"))
     scanner.run()
@@ -3757,6 +3770,44 @@ def _serve_remove(req: dict, emit, cancel) -> None:
     emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
 
 
+def _serve_cleanup_history(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    hist = read_cleanup_history(limit=int(req.get("limit", 8)))
+    emit({"id": rid, "ev": "done", "ok": True, "payload": hist})
+
+
+def _serve_drives(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    drives = []
+    if psutil:
+        for part in psutil.disk_partitions(all=False):
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+                drives.append({
+                    "device": part.device, "mountpoint": part.mountpoint,
+                    "fstype": part.fstype, "total": u.total, "used": u.used,
+                    "free": u.free, "percent": u.percent,
+                })
+            except Exception:
+                continue
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {"drives": drives}})
+
+
+def _serve_open_path(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    target = req.get("path", "")
+    try:
+        p = Path(target)
+        if p.is_dir():
+            os.startfile(str(p))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["explorer", "/select,", str(p)])
+        emit({"id": rid, "ev": "done", "ok": True})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "open_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
 def _serve_handle(req: dict, emit, cancels: dict) -> None:
     """Tek bir isteği işle. emit(event_dict) çağrılır."""
     rid = req.get("id")
@@ -3791,6 +3842,12 @@ def _serve_handle(req: dict, emit, cancels: dict) -> None:
             _serve_update(req, emit, cancel)
         elif op == "remove":
             _serve_remove(req, emit, cancel)
+        elif op == "cleanup_history":
+            _serve_cleanup_history(req, emit, cancel)
+        elif op == "drives":
+            _serve_drives(req, emit, cancel)
+        elif op == "open_path":
+            _serve_open_path(req, emit, cancel)
         else:
             emit({"id": rid, "ev": "error", "code": "unknown_op",
                   "message": f"unknown op: {op}"})

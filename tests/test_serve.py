@@ -125,5 +125,29 @@ class ServeParityTest(unittest.TestCase):
         self.assertIn("payload", done[0])
 
 
+class ServeExtraTest(unittest.TestCase):
+    def test_cleanup_history(self):
+        events, err = _run_serve([{"id": "h", "op": "cleanup_history"}])
+        done = [e for e in events if e["id"] == "h" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        self.assertIn("payload", done[0])
+        self.assertIn("total_freed", done[0]["payload"])
+
+    def test_drives(self):
+        events, err = _run_serve([{"id": "d", "op": "drives"}])
+        done = [e for e in events if e["id"] == "d" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        self.assertIn("drives", done[0]["payload"])
+
+    def test_large_scan(self):
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "x.bin").write_text("x")
+            events, err = _run_serve([
+                {"id": "lg", "op": "scan", "mode": "large", "paths": [d]}
+            ])
+            ids = [e for e in events if e["id"] == "lg"]
+            self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+
 if __name__ == "__main__":
     unittest.main()

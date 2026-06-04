@@ -90,7 +90,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -3484,6 +3484,703 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     apps_cache = list_installed_apps()
                     msg = f"Reloaded {len(apps_cache)} programs."
 # ---------- CLI ----------
+def status_payload() -> dict:
+    """Machine-readable system status. Returns {} if psutil unavailable."""
+    if not psutil:
+        return {}
+    vm = psutil.virtual_memory()
+    du = psutil.disk_usage(USER.anchor or 'C:\\')
+    net = psutil.net_io_counters()
+    dio = psutil.disk_io_counters()
+    bat = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
+    boot = psutil.boot_time()
+    sysinfo = platform.uname()
+    temps = {}
+    if hasattr(psutil, "sensors_temperatures"):
+        try:
+            temps = psutil.sensors_temperatures() or {}
+        except Exception:
+            temps = {}
+    return {
+        "health": health_score(), "cpu_percent": psutil.cpu_percent(interval=0.3),
+        "memory_percent": vm.percent, "memory_used": vm.used, "memory_total": vm.total,
+        "disk_percent": du.percent, "disk_free": du.free, "disk_total": du.total,
+        "disk_read_bytes": (dio.read_bytes if dio else 0), "disk_write_bytes": (dio.write_bytes if dio else 0),
+        "net_up_bytes": net.bytes_sent, "net_down_bytes": net.bytes_recv,
+        "uptime_seconds": int(time.time() - boot),
+        "battery_percent": (bat.percent if bat else None), "power_plugged": (bat.power_plugged if bat else None),
+        "device": {"system": sysinfo.system, "release": sysinfo.release, "node": sysinfo.node},
+        "temperature_sensors": {k: [{"label": t.label, "current": t.current} for t in v[:3]] for k, v in temps.items()},
+        "cpu_per_core": psutil.cpu_percent(interval=0.0, percpu=True),
+        "cpu_count": psutil.cpu_count(logical=True),
+    }
+
+
+# ---------- serve (NDJSON daemon for Tauri GUI) ----------
+import threading as _serve_threading
+
+
+def _serve_emit(lock, event: dict) -> None:
+    """Tek satır NDJSON olayı stdout'a atomik yaz."""
+    line = json.dumps(event, ensure_ascii=False)
+    with lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+def _serve_scan(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    mode = req.get("mode", "clean")
+    paths = [Path(p) for p in req.get("paths", []) if p]
+    emit({"id": rid, "ev": "started", "total_hint": None})
+
+    if mode == "analyze":
+        target = paths[0] if paths else USER
+        min_large = int(load_config().get("large_file_min_mb", 512)) * 1024 * 1024
+        result = analyze_path(target, large_file_min=min_large)
+        for entry in result["entries"]:
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            emit({"id": rid, "ev": "item", "path": str(target / entry["name"]),
+                  "name": entry["name"], "size": entry["size"],
+                  "kind": "dir" if entry["is_dir"] else "file", "selected": False})
+        emit({"id": rid, "ev": "done", "ok": True,
+              "summary": {"count": len(result["entries"]),
+                          "bytes": result["total_size"]}})
+        return
+
+    if mode == "large":
+        target = paths[0] if paths else USER
+        min_large = int(load_config().get("large_file_min_mb", 512)) * 1024 * 1024
+        for f in find_large_files(target, min_large):
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            emit({"id": rid, "ev": "item", "path": str(f["path"]),
+                  "name": Path(f["path"]).name, "size": int(f["size"]),
+                  "kind": "large-file", "selected": False})
+        emit({"id": rid, "ev": "done", "ok": True})
+        return
+
+    profile = {"clean": "clean", "purge": "purge",
+               "installers": "installers", "categories": "full"}.get(mode, "clean")
+    scanner = Scanner(whitelist=load_whitelist(), profile=profile,
+                      roots=paths or None, use_cache=not req.get("no_cache"))
+    scanner.run()
+    if cancel.is_set():
+        emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+        return
+    report = collect_selected_targets(scanner.categories, estimated=not paths)
+    count = 0
+    total = report.get("total", 0)
+    for cat in scanner.categories:
+        for it in cat.items:
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            if it.deleted:
+                continue
+            count += 1
+            emit({"id": rid, "ev": "item", "path": str(it.path),
+                  "name": it.path.name, "size": int(it.size),
+                  "kind": cat.key, "category": cat.title,
+                  "selected": bool(it.selected)})
+    emit({"id": rid, "ev": "done", "ok": True,
+          "summary": {"count": count, "bytes": total}})
+
+
+def _serve_delete(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    targets = [Path(p) for p in req.get("targets", []) if p]
+    use_trash = not bool(req.get("permanent"))
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": len(targets)})
+    ok = err = 0
+    for idx, path in enumerate(targets):
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True,
+                  "summary": {"ok": ok, "err": err}})
+            return
+        error = delete_path(path, use_trash=use_trash, dry_run=dry_run)
+        if error:
+            err += 1
+            emit({"id": rid, "ev": "item_result", "path": str(path),
+                  "ok": False, "error": error})
+        else:
+            ok += 1
+            emit({"id": rid, "ev": "item_result", "path": str(path),
+                  "ok": True, "trashed": use_trash, "dry_run": dry_run})
+        emit({"id": rid, "ev": "progress", "done": idx + 1, "total": len(targets),
+              "label": str(path)})
+    emit({"id": rid, "ev": "done", "ok": True,
+          "summary": {"ok": ok, "err": err}})
+
+
+def _serve_capture_json(fn) -> dict:
+    """cli_* fonksiyonu stdout'a JSON basar; onu yakala ve sözlük döndür."""
+    import io as _io
+    import contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        fn()
+    text = buf.getvalue().strip()
+    try:
+        return json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        return {"raw": text}
+
+
+def _serve_uninstall_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    query = req.get("query", "")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    apps = filter_apps(list_installed_apps(), query=query, limit=req.get("limit"))
+    for app in apps:
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        size = int(app.get("estimated_size_kb") or 0) * 1024
+        emit({"id": rid, "ev": "item", "path": app.get("uninstall_key", ""),
+              "name": app.get("name", ""), "size": size, "kind": "app",
+              "publisher": app.get("publisher", ""), "version": app.get("version", ""),
+              "install_location": app.get("install_location", ""),
+              "uninstall": app.get("uninstall", ""), "selected": False,
+              "app": app})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(apps)}})
+
+
+def _serve_leftovers(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    app = req.get("app") or {"name": req.get("name", "")}
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    files = find_leftover_candidates(app)
+    for it in files[:200]:
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        emit({"id": rid, "ev": "item", "path": str(it.path), "name": it.path.name,
+              "size": int(it.size), "kind": "leftover-file", "selected": False})
+    for key in find_registry_leftover_candidates(app):
+        emit({"id": rid, "ev": "item", "path": key, "name": key,
+              "size": 0, "kind": "leftover-reg", "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_uninstall_run(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    uninst = req.get("uninstall", "")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    if not uninst:
+        emit({"id": rid, "ev": "error", "code": "no_uninstall_string",
+              "message": "uninstall string yok"})
+        emit({"id": rid, "ev": "done", "ok": False})
+        return
+    try:
+        subprocess.Popen(uninst, shell=True)
+        emit({"id": rid, "ev": "item_result", "path": uninst, "ok": True})
+        emit({"id": rid, "ev": "done", "ok": True})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "launch_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _serve_optimize_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    for act in OPTIMIZE_ACTIONS:
+        emit({"id": rid, "ev": "item", "path": act.key, "name": act.title,
+              "size": 0, "kind": "optimize", "description": act.description,
+              "risk": act.risk, "requires_admin": act.requires_admin,
+              "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_optimize_run(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    keys = req.get("keys") or ([req["key"]] if req.get("key") else [])
+    dry_run = bool(req.get("dry_run"))
+    by_key = {a.key: a for a in OPTIMIZE_ACTIONS}
+    emit({"id": rid, "ev": "started", "total_hint": len(keys)})
+    for idx, key in enumerate(keys):
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        act = by_key.get(key)
+        if not act:
+            emit({"id": rid, "ev": "item_result", "path": key, "ok": False,
+                  "error": "unknown action"})
+            continue
+        msg = run_optimize(act, dry_run=dry_run)
+        ok = msg.startswith("ok") or msg.startswith("dry-run")
+        emit({"id": rid, "ev": "item_result", "path": key, "ok": ok,
+              "message": msg, "title": act.title})
+        emit({"id": rid, "ev": "progress", "done": idx + 1, "total": len(keys),
+              "label": act.title})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_ports_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    rows = list_dev_ports(include_all=bool(req.get("all_binds")))
+    for r in rows:
+        emit({"id": rid, "ev": "item",
+              "path": f"{r['proto']}:{r['port']}:{r.get('pid') or ''}",
+              "name": f"{r['proto']}/{r['port']}", "size": 0, "kind": "port",
+              "port": r["port"], "pid": r.get("pid"), "proto": r["proto"],
+              "process": r.get("process", ""), "ip": r.get("ip", ""),
+              "hint": r.get("hint", ""), "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(rows)}})
+
+
+def _serve_ports_kill(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    pids = req.get("pids") or ([req["pid"]] if req.get("pid") else [])
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": len(pids)})
+    for idx, pid in enumerate(pids):
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        msg = kill_pid(int(pid), dry_run=dry_run)
+        log_operation("port_kill", Path(f"pid:{pid}"), 0, msg)
+        ok = "killed" in msg or "would kill" in msg or "already gone" in msg
+        emit({"id": rid, "ev": "item_result", "path": str(pid), "ok": ok,
+              "message": msg})
+        emit({"id": rid, "ev": "progress", "done": idx + 1, "total": len(pids),
+              "label": f"pid {pid}"})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_update(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    payload = _serve_capture_json(
+        lambda: cli_update(json_out=True, yes=bool(req.get("yes")),
+                           dry_run=dry_run, quiet=True))
+    emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
+
+
+def _serve_remove(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    payload = _serve_capture_json(
+        lambda: cli_remove(dry_run=dry_run, json_out=True))
+    emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
+
+
+def _serve_cleanup_history(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    hist = read_cleanup_history(limit=int(req.get("limit", 8)))
+    emit({"id": rid, "ev": "done", "ok": True, "payload": hist})
+
+
+def _serve_drives(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    drives = []
+    if psutil:
+        for part in psutil.disk_partitions(all=False):
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+                drives.append({
+                    "device": part.device, "mountpoint": part.mountpoint,
+                    "fstype": part.fstype, "total": u.total, "used": u.used,
+                    "free": u.free, "percent": u.percent,
+                })
+            except Exception:
+                continue
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {"drives": drives}})
+
+
+def _serve_open_path(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    target = req.get("path", "")
+    try:
+        p = Path(target)
+        if p.is_dir():
+            os.startfile(str(p))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["explorer", "/select,", str(p)])
+        emit({"id": rid, "ev": "done", "ok": True})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "open_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _read_list_file(path: Path) -> list:
+    out = []
+    try:
+        if path_exists(path):
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    out.append(s)
+    except Exception:
+        pass
+    return out
+
+
+def _write_list_file(path: Path, items: list) -> None:
+    WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text("# one path per line\n" + "\n".join(items) + "\n", encoding="utf-8")
+
+
+def _serve_settings_get(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {
+        "config": load_config(),
+        "whitelist": _read_list_file(WHITELIST_FILE),
+        "denylist": _read_list_file(DENYLIST_FILE),
+        "purge_paths": _read_list_file(PURGE_PATHS_FILE),
+    }})
+
+
+def _serve_settings_set(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    files = {"whitelist": WHITELIST_FILE, "denylist": DENYLIST_FILE,
+             "purge_paths": PURGE_PATHS_FILE}
+    for key, fp in files.items():
+        if key in req and isinstance(req[key], list):
+            _write_list_file(fp, [str(x) for x in req[key]])
+    for k, v in (req.get("config") or {}).items():
+        _save_config_key(k, v)
+    _serve_settings_get(req, emit, cancel)
+
+
+def _serve_is_admin(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    admin = False
+    try:
+        import ctypes
+        admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        pass
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {"is_admin": admin}})
+
+
+def _serve_completion_install(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    try:
+        script = powershell_completion_script()
+        WMOLE_DIR.mkdir(parents=True, exist_ok=True)
+        COMPLETION_FILE.write_text(script + "\n", encoding="utf-8")
+        emit({"id": rid, "ev": "done", "ok": True,
+              "payload": {"path": str(COMPLETION_FILE)}})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "completion_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+SCHED_TASK_NAME = "wmole-weekly-clean"
+
+
+def _serve_schedule_get(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    enabled = False
+    detail = ""
+    try:
+        r = subprocess.run(["schtasks", "/query", "/tn", SCHED_TASK_NAME],
+                           capture_output=True, text=True, timeout=15)
+        enabled = r.returncode == 0
+        detail = (r.stdout or "").strip()[:400]
+    except Exception:
+        pass
+    emit({"id": rid, "ev": "done", "ok": True,
+          "payload": {"enabled": enabled, "detail": detail}})
+
+
+def _serve_schedule_set(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    day = req.get("day", "SUN")
+    time_s = req.get("time", "20:00")
+    exe = sys.executable
+    # serve modunda değil; clean modunu --yes ile çalıştır
+    if getattr(sys, "frozen", False):
+        cmd_str = f'"{exe}" clean --yes'
+    else:
+        cmd_str = f'"{exe}" "{os.path.abspath(__file__)}" clean --yes'
+    try:
+        r = subprocess.run([
+            "schtasks", "/create", "/f", "/tn", SCHED_TASK_NAME,
+            "/sc", "weekly", "/d", day, "/st", time_s, "/tr", cmd_str,
+        ], capture_output=True, text=True, timeout=20)
+        ok = r.returncode == 0
+        emit({"id": rid, "ev": "done", "ok": ok,
+              "payload": {"message": (r.stdout or r.stderr).strip()}})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "schedule_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _serve_schedule_clear(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    try:
+        r = subprocess.run(["schtasks", "/delete", "/f", "/tn", SCHED_TASK_NAME],
+                           capture_output=True, text=True, timeout=15)
+        emit({"id": rid, "ev": "done", "ok": r.returncode == 0,
+              "payload": {"message": (r.stdout or r.stderr).strip()}})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "schedule_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _startup_entries() -> list:
+    """Windows başlangıç girdileri: Run registry anahtarları + Startup klasörü."""
+    entries = []
+    try:
+        import winreg
+        hives = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKCU"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKLM"),
+        ]
+        for hive, sub, label in hives:
+            try:
+                key = winreg.OpenKey(hive, sub)
+                i = 0
+                while True:
+                    try:
+                        name, val, _ = winreg.EnumValue(key, i)
+                        entries.append({"name": name, "command": val,
+                                        "location": f"{label}\\Run", "enabled": True})
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+            except OSError:
+                pass
+    except Exception:
+        pass
+    startup_dir = USER / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
+    try:
+        if startup_dir.is_dir():
+            for f in startup_dir.iterdir():
+                entries.append({"name": f.name, "command": str(f),
+                                "location": "Startup Folder", "enabled": True})
+    except Exception:
+        pass
+    return entries
+
+
+def _serve_startup_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    for e in _startup_entries():
+        emit({"id": rid, "ev": "item", "path": e["command"], "name": e["name"],
+              "size": 0, "kind": "startup", "location": e["location"],
+              "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_startup_disable(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    name = req.get("name", "")
+    location = req.get("location", "")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    try:
+        if location.endswith("Run"):
+            import winreg
+            hive = winreg.HKEY_CURRENT_USER if location.startswith("HKCU") else winreg.HKEY_LOCAL_MACHINE
+            key = winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+            winreg.DeleteValue(key, name)
+            winreg.CloseKey(key)
+            emit({"id": rid, "ev": "item_result", "path": name, "ok": True})
+        elif location == "Startup Folder":
+            err = delete_path(Path(req.get("path", "")), use_trash=True, dry_run=False)
+            emit({"id": rid, "ev": "item_result", "path": name, "ok": err is None,
+                  "error": err})
+        emit({"id": rid, "ev": "done", "ok": True})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "startup_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _serve_processes_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    procs = []
+    if psutil:
+        for p in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]):
+            try:
+                info = p.info
+                mem = info["memory_info"].rss if info.get("memory_info") else 0
+                procs.append({"pid": info["pid"], "name": info.get("name") or "?",
+                              "mem": mem, "cpu": info.get("cpu_percent") or 0.0})
+            except Exception:
+                continue
+    procs.sort(key=lambda x: x["mem"], reverse=True)
+    for p in procs[:300]:
+        emit({"id": rid, "ev": "item", "path": str(p["pid"]), "name": p["name"],
+              "size": p["mem"], "kind": "process", "pid": p["pid"],
+              "cpu": p["cpu"], "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(procs)}})
+
+
+def _serve_duplicates(req: dict, emit, cancel) -> None:
+    import hashlib
+    rid = req.get("id")
+    roots = [Path(p) for p in req.get("paths", []) if p] or [USER]
+    min_size = int(req.get("min_size", 1024 * 1024))  # 1MB default
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    by_size: dict = {}
+    scanned = 0
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            for fn in files:
+                fp = Path(dirpath) / fn
+                try:
+                    sz = fp.stat().st_size
+                except OSError:
+                    continue
+                if sz >= min_size:
+                    by_size.setdefault(sz, []).append(fp)
+            scanned += 1
+            if scanned % 200 == 0:
+                emit({"id": rid, "ev": "progress", "done": scanned, "total": 0,
+                      "label": dirpath})
+    groups = 0
+    for sz, paths in by_size.items():
+        if len(paths) < 2:
+            continue
+        hashes: dict = {}
+        for fp in paths:
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            try:
+                h = hashlib.md5()
+                with open(fp, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        h.update(chunk)
+                hashes.setdefault(h.hexdigest(), []).append(fp)
+            except OSError:
+                continue
+        for digest, dups in hashes.items():
+            if len(dups) < 2:
+                continue
+            groups += 1
+            for fp in dups:
+                emit({"id": rid, "ev": "item", "path": str(fp), "name": fp.name,
+                      "size": sz, "kind": "duplicate", "group": digest[:8],
+                      "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"groups": groups}})
+
+
+def _serve_handle(req: dict, emit, cancels: dict) -> None:
+    """Tek bir isteği işle. emit(event_dict) çağrılır."""
+    rid = req.get("id")
+    op = req.get("op")
+    cancel = _serve_threading.Event()
+    if rid is not None:
+        cancels[rid] = cancel
+    try:
+        if op == "ping":
+            emit({"id": rid, "ev": "done", "ok": True})
+        elif op == "status":
+            emit({"id": rid, "ev": "done", "ok": True, "payload": status_payload()})
+        elif op == "scan":
+            _serve_scan(req, emit, cancel)
+        elif op == "delete":
+            _serve_delete(req, emit, cancel)
+        elif op == "uninstall_list":
+            _serve_uninstall_list(req, emit, cancel)
+        elif op == "leftovers":
+            _serve_leftovers(req, emit, cancel)
+        elif op == "uninstall_run":
+            _serve_uninstall_run(req, emit, cancel)
+        elif op == "optimize_list":
+            _serve_optimize_list(req, emit, cancel)
+        elif op == "optimize_run":
+            _serve_optimize_run(req, emit, cancel)
+        elif op == "ports_list":
+            _serve_ports_list(req, emit, cancel)
+        elif op == "ports_kill":
+            _serve_ports_kill(req, emit, cancel)
+        elif op == "update":
+            _serve_update(req, emit, cancel)
+        elif op == "remove":
+            _serve_remove(req, emit, cancel)
+        elif op == "cleanup_history":
+            _serve_cleanup_history(req, emit, cancel)
+        elif op == "drives":
+            _serve_drives(req, emit, cancel)
+        elif op == "open_path":
+            _serve_open_path(req, emit, cancel)
+        elif op == "settings_get":
+            _serve_settings_get(req, emit, cancel)
+        elif op == "settings_set":
+            _serve_settings_set(req, emit, cancel)
+        elif op == "is_admin":
+            _serve_is_admin(req, emit, cancel)
+        elif op == "completion_install":
+            _serve_completion_install(req, emit, cancel)
+        elif op == "schedule_get":
+            _serve_schedule_get(req, emit, cancel)
+        elif op == "schedule_set":
+            _serve_schedule_set(req, emit, cancel)
+        elif op == "schedule_clear":
+            _serve_schedule_clear(req, emit, cancel)
+        elif op == "startup_list":
+            _serve_startup_list(req, emit, cancel)
+        elif op == "startup_disable":
+            _serve_startup_disable(req, emit, cancel)
+        elif op == "processes_list":
+            _serve_processes_list(req, emit, cancel)
+        elif op == "duplicates":
+            _serve_duplicates(req, emit, cancel)
+        else:
+            emit({"id": rid, "ev": "error", "code": "unknown_op",
+                  "message": f"unknown op: {op}"})
+            emit({"id": rid, "ev": "done", "ok": False})
+    except Exception as exc:  # bir istek hatası döngüyü düşürmesin
+        emit({"id": rid, "ev": "error", "code": "exception", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+    finally:
+        cancels.pop(rid, None)
+
+
+def cmd_serve() -> None:
+    """Kalıcı NDJSON istek/olay döngüsü. stdin'den satır-başına-bir-JSON okur."""
+    out_lock = _serve_threading.Lock()
+    cancels: dict = {}  # rid -> threading.Event
+    workers: list = []
+
+    _serve_emit(out_lock, {"id": None, "ev": "ready"})
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            req = json.loads(raw)
+        except json.JSONDecodeError:
+            _serve_emit(out_lock, {"id": None, "ev": "error",
+                                   "code": "bad_json", "message": raw[:200]})
+            continue
+        rid = req.get("id")
+        if req.get("op") == "cancel":
+            ev = cancels.get(rid)
+            if ev:
+                ev.set()
+            continue
+        worker = _serve_threading.Thread(
+            target=_serve_handle,
+            args=(req, lambda e: _serve_emit(out_lock, e), cancels),
+            daemon=True,
+        )
+        worker.start()
+        workers.append(worker)
+        workers = [w for w in workers if w.is_alive()]
+
+    # stdin kapandı: çalışan worker'ların olaylarını yazmasını bekle (graceful shutdown).
+    for w in workers:
+        w.join(timeout=120)
+
+
 def cli_clean(dry_run: bool, json_out: bool, roots: Optional[List[Path]] = None,
               whitelist: Optional[List[Path]] = None, use_cache: bool = True) -> None:
     """Headless: scan, pick the safe_default categories, ask once, delete."""
@@ -4322,7 +5019,7 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
 def main_cli() -> None:
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
-                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports"])
+                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports", "serve"])
     p.add_argument("targets", nargs="*", help="optional paths for analyze/purge/installers")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true", dest="json_out")
@@ -4343,7 +5040,7 @@ def main_cli() -> None:
 
     # Do not start a final background check while the user is disabling it.
     # Other commands preserve the fire-and-forget startup behavior.
-    if not (args.mode == "update" and args.disable_auto):
+    if args.mode != "serve" and not (args.mode == "update" and args.disable_auto):
         start_auto_update_check()
 
     target_paths = [Path(t).expanduser() for t in args.targets]
@@ -4366,33 +5063,10 @@ def main_cli() -> None:
         roots = target_paths or [USER / "Downloads", USER / "Desktop"]
         cli_categories(build_installer_categories(roots),
                        dry_run=args.dry_run, json_out=args.json_out, label="installers")
+    elif args.mode == "serve":
+        cmd_serve()
     elif args.mode == "status" and args.json_out:
-        if psutil:
-            vm = psutil.virtual_memory(); du = psutil.disk_usage(USER.anchor or 'C:\\')
-            net = psutil.net_io_counters()
-            dio = psutil.disk_io_counters()
-            bat = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
-            boot = psutil.boot_time()
-            sysinfo = platform.uname()
-            temps = {}
-            if hasattr(psutil, "sensors_temperatures"):
-                try:
-                    temps = psutil.sensors_temperatures() or {}
-                except Exception:
-                    temps = {}
-            print(json.dumps({
-                "health": health_score(), "cpu_percent": psutil.cpu_percent(interval=0.3),
-                "memory_percent": vm.percent, "memory_used": vm.used, "memory_total": vm.total,
-                "disk_percent": du.percent, "disk_free": du.free, "disk_total": du.total,
-                "disk_read_bytes": (dio.read_bytes if dio else 0), "disk_write_bytes": (dio.write_bytes if dio else 0),
-                "net_up_bytes": net.bytes_sent, "net_down_bytes": net.bytes_recv,
-                "uptime_seconds": int(time.time() - boot),
-                "battery_percent": (bat.percent if bat else None), "power_plugged": (bat.power_plugged if bat else None),
-                "device": {"system": sysinfo.system, "release": sysinfo.release, "node": sysinfo.node},
-                "temperature_sensors": {k: [{"label": t.label, "current": t.current} for t in v[:3]] for k, v in temps.items()},
-            }, indent=2))
-        else:
-            print("{}")
+        print(json.dumps(status_payload(), indent=2))
     elif args.mode == "status":
         cli_status()
     elif args.mode == "optimize":

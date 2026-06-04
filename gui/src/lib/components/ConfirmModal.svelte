@@ -79,13 +79,13 @@
     z-index: 100;
   }
   .modal {
-    background: #11161c;
-    border: 1px solid #1b2530;
+    background: var(--panel);
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 22px;
     min-width: 360px;
     font-family: monospace;
-    color: #e6edf3;
+    color: var(--fg);
   }
   h3 { margin: 0 0 12px; color: #58d6a0; }
   .opt {
@@ -93,7 +93,7 @@
     gap: 8px;
     align-items: center;
     margin: 12px 0;
-    color: #9aa7b4;
+    color: var(--muted);
   }
   .warn { color: #e5534b; font-size: 13px; }
   .actions {
@@ -109,7 +109,7 @@
     cursor: pointer;
     font-family: monospace;
   }
-  .ghost { background: #243140; color: #e6edf3; }
+  .ghost { background: var(--btn); color: var(--fg); }
   button.danger { background: #e5534b; color: white; }
   button:not(.ghost):not(.danger) { background: #2ea043; color: white; }
 </style>

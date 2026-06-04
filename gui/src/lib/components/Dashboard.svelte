@@ -6,6 +6,7 @@
   import VirtualList from "./VirtualList.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
+  import { notify } from "$lib/notify";
 
   let s = $state<Record<string, any>>({});
   let hist = $state<Record<string, any>>({});
@@ -83,7 +84,9 @@
     progress = { done: 0, total: 0, label: "" };
     scanItems = [];
     scanned = false;
-    toast(`Hızlı temizlik: ${ok} öğe silindi${err ? `, ${err} hata` : ""}`, err ? "err" : "ok");
+    const msg = `Hızlı temizlik: ${ok} öğe silindi${err ? `, ${err} hata` : ""}`;
+    toast(msg, err ? "err" : "ok");
+    if (ok > 0) notify("wmole", msg);
     loadHistory();
   }
 
@@ -123,6 +126,19 @@
         : "—"}
       {#if s.battery_percent != null}· 🔋 {s.battery_percent}%{s.power_plugged ? " ⚡" : ""}{/if}
     </div>
+    {#if s.cpu_per_core?.length}
+      <div class="cores">
+        <span class="ml">Çekirdek</span>
+        {#each s.cpu_per_core as c}
+          <div class="core" title="{c.toFixed(0)}%">
+            <div class="corefill" style="height:{Math.max(4, c)}%; background:{color(c)}"></div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if s.temperature_sensors && Object.keys(s.temperature_sensors).length}
+      <div class="sub">🌡 {Object.values(s.temperature_sensors).flat().slice(0, 4).map((x: any) => `${x.label || "sensor"}: ${x.current}°`).join(" · ")}</div>
+    {/if}
   </div>
 
   <!-- Temizlik Analizi / Hızlı Temizle -->
@@ -172,6 +188,16 @@
         Toplam boşaltılan: <strong class="green">{fmt(hist.total_freed)}</strong>
         <span class="muted">({hist.count} işlem · son: {hist.last_ts})</span>
       </p>
+      {#if (hist.recent ?? []).length}
+        {@const maxSz = Math.max(...(hist.recent ?? []).map((e: any) => e.size), 1)}
+        <div class="chart">
+          {#each hist.recent ?? [] as e}
+            <div class="cbar" title="{fmt(e.size)} · {e.path}">
+              <div class="cbarfill" style="height:{Math.max(3, (e.size / maxSz) * 100)}%"></div>
+            </div>
+          {/each}
+        </div>
+      {/if}
       <ul class="histlist">
         {#each hist.recent ?? [] as e}
           <li>
@@ -197,24 +223,30 @@
 
 <style>
   .dash { display: flex; flex-direction: column; gap: 14px; font-family: monospace; }
-  h2 { margin: 0; color: #e6edf3; }
+  h2 { margin: 0; color: var(--fg); }
   h3 { margin: 0 0 10px; color: #58d6a0; font-size: 14px; }
   .meters {
-    background: #11161c; border: 1px solid #1b2530; border-radius: 8px; padding: 14px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
     display: flex; flex-direction: column; gap: 8px;
   }
   .meter { display: flex; align-items: center; gap: 12px; }
-  .ml { color: #9aa7b4; min-width: 60px; }
-  .bar { flex: 1; height: 12px; background: #1b2530; border-radius: 6px; overflow: hidden; }
+  .ml { color: var(--muted); min-width: 60px; }
+  .bar { flex: 1; height: 12px; background: var(--border); border-radius: 6px; overflow: hidden; }
   .fill { height: 100%; transition: width 0.3s; }
-  .mv { color: #e6edf3; min-width: 70px; text-align: right; }
-  .sub { color: #6e7681; font-size: 12px; margin-top: 4px; }
-  .card { background: #11161c; border: 1px solid #1b2530; border-radius: 8px; padding: 14px; }
-  .muted { color: #6e7681; }
+  .mv { color: var(--fg); min-width: 70px; text-align: right; }
+  .sub { color: var(--faint); font-size: 12px; margin-top: 4px; }
+  .cores { display: flex; align-items: flex-end; gap: 3px; margin-top: 6px; height: 36px; }
+  .core { width: 10px; height: 100%; background: var(--border); border-radius: 2px; display: flex; align-items: flex-end; overflow: hidden; }
+  .corefill { width: 100%; border-radius: 2px; }
+  .chart { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin: 8px 0; }
+  .cbar { flex: 1; height: 100%; display: flex; align-items: flex-end; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .cbarfill { width: 100%; background: #58d6a0; border-radius: 3px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .muted { color: var(--faint); }
   .green { color: #58d6a0; }
   .row { display: flex; gap: 10px; margin-top: 8px; }
   button {
-    background: #243140; color: #e6edf3; border: none; padding: 8px 16px;
+    background: var(--btn); color: var(--fg); border: none; padding: 8px 16px;
     border-radius: 5px; cursor: pointer; font-family: monospace;
   }
   button.primary { background: #2ea043; color: white; }
@@ -222,9 +254,9 @@
   .histlist li { display: flex; gap: 10px; font-size: 12px; }
   .histlist .green { min-width: 80px; text-align: right; }
   .histlist .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cleanlist { height: 220px; margin-top: 10px; background: #0d1117; border: 1px solid #1b2530; border-radius: 6px; }
+  .cleanlist { height: 220px; margin-top: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
   .clitem { display: flex; gap: 10px; align-items: center; padding: 0 10px; width: 100%; font-size: 12px; cursor: pointer; }
   .csize { color: #58d6a0; min-width: 70px; text-align: right; }
   .ccat { color: #d29922; min-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cpath { color: #9aa7b4; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cpath { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

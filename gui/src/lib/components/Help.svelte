@@ -55,12 +55,12 @@
 
 <style>
   .help { display: flex; flex-direction: column; gap: 14px; font-family: monospace; overflow: auto; }
-  h2 { margin: 0; color: #e6edf3; }
-  .intro { color: #9aa7b4; margin: 0; }
-  .card { background: #11161c; border: 1px solid #1b2530; border-radius: 8px; padding: 14px; }
+  h2 { margin: 0; color: var(--fg); }
+  .intro { color: var(--muted); margin: 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
   h3 { margin: 0 0 10px; color: #58d6a0; }
   dl { margin: 0; display: flex; flex-direction: column; gap: 8px; }
   .item { display: grid; grid-template-columns: 180px 1fr; gap: 12px; }
   dt { color: #d29922; }
-  dd { margin: 0; color: #9aa7b4; }
+  dd { margin: 0; color: var(--muted); }
 </style>

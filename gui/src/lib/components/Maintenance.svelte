@@ -66,19 +66,19 @@
 
 <style>
   .wrap { display: flex; flex-direction: column; gap: 16px; font-family: monospace; }
-  .card { background: #11161c; border: 1px solid #1b2530; border-radius: 8px; padding: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   h3 { margin: 0 0 8px; color: #58d6a0; }
-  p { color: #9aa7b4; }
+  p { color: var(--muted); }
   code { color: #d29922; }
   .row { display: flex; gap: 10px; }
   button {
-    background: #243140; color: #e6edf3; border: none; padding: 8px 16px;
+    background: var(--btn); color: var(--fg); border: none; padding: 8px 16px;
     border-radius: 4px; cursor: pointer; font-family: monospace;
   }
   button:disabled { opacity: 0.5; cursor: default; }
   button.danger { background: #e5534b; color: white; }
   .out {
-    background: #0d1117; border: 1px solid #1b2530; border-radius: 6px;
-    padding: 12px; color: #9aa7b4; font-size: 12px; max-height: 280px; overflow: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; color: var(--muted); font-size: 12px; max-height: 280px; overflow: auto;
   }
 </style>

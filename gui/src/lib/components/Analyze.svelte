@@ -24,9 +24,25 @@
   let drives = $state<any[]>([]);
   let showDrives = $state(false);
   let confirmOpen = $state(false);
+  let treemap = $state(false);
 
   let selected = $derived(entries.filter((e) => e.selected));
   let selectedBytes = $derived(selected.reduce((a, i) => a + (i.size || 0), 0));
+  let totalSize = $derived(entries.reduce((a, e) => a + (e.size || 0), 0) || 1);
+  let topEntries = $derived([...entries].sort((a, b) => b.size - a.size).slice(0, 40));
+
+  function treemapColor(i: number) {
+    return `hsl(${(i * 47) % 360}, 55%, 55%)`;
+  }
+  function onKey(e: KeyboardEvent) {
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "SELECT") return;
+    if (e.key === "Backspace" && path) { e.preventDefault(); scan(parent(path)); }
+    else if (e.key === "Delete" && selected.length) { e.preventDefault(); confirmOpen = true; }
+    else if (e.key === "a") setAll(true);
+    else if (e.key === "n") setAll(false);
+    else if (e.key === "r") scan();
+  }
 
   function fmt(n: number) {
     const u = ["B", "KB", "MB", "GB", "TB"];
@@ -128,6 +144,7 @@
     <button onclick={() => scan()} disabled={scanning}>{scanning ? "…" : "Tara"}</button>
     <label class="dry"><input type="checkbox" bind:checked={largeMode} onchange={() => scan()} /> Büyük dosyalar</label>
     <button onclick={loadDrives}>Sürücüler</button>
+    <button class:active={treemap} onclick={() => (treemap = !treemap)}>Harita</button>
     <button onclick={() => setAll(true)} disabled={!entries.length}>Tümünü Seç</button>
     <button onclick={() => setAll(false)} disabled={!entries.length}>Hiçbiri</button>
     <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>Sil… ({selected.length})</button>
@@ -145,26 +162,44 @@
     </div>
   {/if}
 
-  <div class="list">
-    <VirtualList items={entries} rowHeight={28}>
-      {#snippet row(item)}
-        <div class="entry">
-          <input type="checkbox" checked={item.selected} onchange={() => toggle(item)} />
-          <span class="size">{fmt(item.size)}</span>
-          <button
-            class="name"
-            class:dir={item.kind === "dir"}
-            onclick={() => openEntry(item)}
-            title={item.path}
-          >
-            {item.kind === "dir" ? "📁" : "📄"} {item.name}
-          </button>
-          <button class="mini" onclick={() => reveal(item.path)} title="Explorer'da aç">↗</button>
-        </div>
-      {/snippet}
-    </VirtualList>
-  </div>
+  {#if treemap}
+    <div class="treemap">
+      {#each topEntries as e, i (e.path)}
+        <button
+          class="tile"
+          style="flex-grow:{Math.max(1, Math.round((e.size / totalSize) * 1000))}; background:{treemapColor(i)}"
+          title="{e.name} · {fmt(e.size)} ({((e.size / totalSize) * 100).toFixed(1)}%)"
+          onclick={() => (e.kind === "dir" ? openEntry(e) : reveal(e.path))}
+        >
+          <span class="tname">{e.name}</span>
+          <span class="tsize">{fmt(e.size)}</span>
+        </button>
+      {/each}
+    </div>
+  {:else}
+    <div class="list">
+      <VirtualList items={entries} rowHeight={28}>
+        {#snippet row(item)}
+          <div class="entry">
+            <input type="checkbox" checked={item.selected} onchange={() => toggle(item)} />
+            <span class="size">{fmt(item.size)}</span>
+            <button
+              class="name"
+              class:dir={item.kind === "dir"}
+              onclick={() => openEntry(item)}
+              title={item.path}
+            >
+              {item.kind === "dir" ? "📁" : "📄"} {item.name}
+            </button>
+            <button class="mini" onclick={() => reveal(item.path)} title="Explorer'da aç">↗</button>
+          </div>
+        {/snippet}
+      </VirtualList>
+    </div>
+  {/if}
 </div>
+
+<svelte:window onkeydown={onKey} />
 
 <ConfirmModal
   open={confirmOpen}
@@ -183,21 +218,26 @@
 <style>
   .scan { display: flex; flex-direction: column; height: 100%; font-family: monospace; }
   .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-  .toolbar h2 { margin: 0; color: #e6edf3; }
-  .pathbox { flex: 1; min-width: 200px; background: #0d1117; border: 1px solid #1b2530; color: #e6edf3; padding: 5px 10px; border-radius: 4px; font-family: monospace; }
-  .dry { color: #9aa7b4; display: flex; gap: 6px; align-items: center; font-size: 12px; }
-  button { background: #243140; color: #e6edf3; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-family: monospace; }
+  .toolbar h2 { margin: 0; color: var(--fg); }
+  .pathbox { flex: 1; min-width: 200px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding: 5px 10px; border-radius: 4px; font-family: monospace; }
+  .dry { color: var(--muted); display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  button { background: var(--btn); color: var(--fg); border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-family: monospace; }
   button:disabled { opacity: 0.5; cursor: default; }
   button.danger { background: #e5534b; color: white; }
-  .count { color: #9aa7b4; font-size: 12px; }
+  button.active { background: #2ea043; color: white; }
+  .treemap { flex: 1; min-height: 0; display: flex; flex-wrap: wrap; gap: 3px; align-content: flex-start; overflow: auto; padding: 3px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .tile { min-width: 90px; min-height: 60px; flex-basis: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; border: none; border-radius: 4px; color: #0d1117; cursor: pointer; padding: 6px; overflow: hidden; }
+  .tname { font-size: 12px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .tsize { font-size: 11px; opacity: 0.85; }
+  .count { color: var(--muted); font-size: 12px; }
   .drives { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-  .drive { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; background: #11161c; border: 1px solid #1b2530; padding: 8px 14px; }
-  .muted { color: #6e7681; font-size: 11px; }
-  .list { flex: 1; min-height: 0; background: #11161c; border: 1px solid #1b2530; border-radius: 8px; }
+  .drive { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; background: var(--panel); border: 1px solid var(--border); padding: 8px 14px; }
+  .muted { color: var(--faint); font-size: 11px; }
+  .list { flex: 1; min-height: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
   .entry { display: flex; gap: 10px; align-items: center; padding: 0 10px; width: 100%; }
   .size { color: #58d6a0; min-width: 80px; text-align: right; }
-  .name { flex: 1; text-align: left; background: none; color: #9aa7b4; padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .name.dir { color: #e6edf3; cursor: pointer; }
+  .name { flex: 1; text-align: left; background: none; color: var(--muted); padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name.dir { color: var(--fg); cursor: pointer; }
   .name.dir:hover { color: #58d6a0; }
   .mini { padding: 2px 8px; font-size: 12px; }
 </style>

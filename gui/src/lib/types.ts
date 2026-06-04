@@ -15,7 +15,18 @@ export type Op =
   | "remove"
   | "cleanup_history"
   | "drives"
-  | "open_path";
+  | "open_path"
+  | "settings_get"
+  | "settings_set"
+  | "is_admin"
+  | "completion_install"
+  | "schedule_get"
+  | "schedule_set"
+  | "schedule_clear"
+  | "startup_list"
+  | "startup_disable"
+  | "processes_list"
+  | "duplicates";
 
 export interface Request {
   id: string;
@@ -36,6 +47,15 @@ export interface Request {
   pids?: number[];
   all_binds?: boolean;
   yes?: boolean;
+  whitelist?: string[];
+  denylist?: string[];
+  purge_paths?: string[];
+  config?: Record<string, unknown>;
+  day?: string;
+  time?: string;
+  name?: string;
+  location?: string;
+  min_size?: number;
 }
 
 export interface SidecarEvent {

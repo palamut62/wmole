@@ -1,44 +1,42 @@
 <script lang="ts">
+  import { t } from "$lib/i18n";
   let { active, onSelect }: { active: string; onSelect: (view: string) => void } =
     $props();
 
   const groups = [
+    { label: "General", items: [["Dashboard", "▣"]] },
     {
-      label: "Genel",
-      items: [["Dashboard", "▣"]],
-    },
-    {
-      label: "Temizlik",
+      label: "Cleaning",
       items: [
         ["Analyze", "🔍"],
         ["Categories", "▦"],
         ["Clean", "🧹"],
         ["Purge", "🗑"],
         ["Installers", "📦"],
+        ["Duplicates", "⧉"],
       ],
     },
     {
-      label: "Sistem",
+      label: "System",
       items: [
         ["Uninstall", "⊟"],
         ["Optimize", "⚙"],
+        ["Startup", "⏻"],
         ["Ports", "🔌"],
+        ["Processes", "▤"],
         ["Maintenance", "🛠"],
       ],
     },
-    {
-      label: "Diğer",
-      items: [["Help", "?"]],
-    },
+    { label: "Other", items: [["Settings", "⚙"], ["Help", "?"]] },
   ];
 </script>
 
 <nav class="sidebar">
   {#each groups as g}
-    <div class="group-label">{g.label}</div>
+    <div class="group-label">{$t(g.label)}</div>
     {#each g.items as [name, icon]}
       <button class:active={active === name} onclick={() => onSelect(name)}>
-        <span class="icon">{icon}</span>{name}
+        <span class="icon">{icon}</span>{$t(name)}
       </button>
     {/each}
   {/each}
@@ -50,9 +48,9 @@
     flex-direction: column;
     gap: 1px;
     padding: 8px;
-    background: #11161c;
+    background: var(--panel);
     min-width: 168px;
-    border-right: 1px solid #1b2530;
+    border-right: 1px solid var(--border);
     overflow-y: auto;
   }
   .group-label {
@@ -69,7 +67,7 @@
     gap: 9px;
     background: none;
     border: none;
-    color: #9aa7b4;
+    color: var(--muted);
     text-align: left;
     padding: 7px 12px;
     font-family: monospace;
@@ -78,6 +76,6 @@
     border-radius: 5px;
   }
   .icon { width: 18px; text-align: center; opacity: 0.85; }
-  button:hover { background: #1b2530; color: #e6edf3; }
-  button.active { background: #243140; color: #58d6a0; }
+  button:hover { background: var(--border); color: var(--fg); }
+  button.active { background: var(--btn); color: #58d6a0; }
 </style>

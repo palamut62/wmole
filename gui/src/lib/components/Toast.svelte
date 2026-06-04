@@ -23,8 +23,8 @@
     border-radius: 6px;
     font-family: monospace;
     font-size: 13px;
-    background: #1b2530;
-    color: #e6edf3;
+    background: var(--border);
+    color: var(--fg);
     border-left: 3px solid #58d6a0;
   }
   .toast.err { border-left-color: #e5534b; }

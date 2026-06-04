@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "notification:default",
     "shell:allow-execute",
     "shell:allow-spawn",
     {

@@ -161,25 +161,25 @@
 <style>
   .scan { display: flex; flex-direction: column; height: 100%; font-family: monospace; }
   .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-  .toolbar h2, .toolbar h3 { margin: 0; color: #e6edf3; }
+  .toolbar h2, .toolbar h3 { margin: 0; color: var(--fg); }
   input {
-    background: #0d1117; border: 1px solid #1b2530; color: #e6edf3;
+    background: var(--bg); border: 1px solid var(--border); color: var(--fg);
     padding: 5px 10px; border-radius: 4px; font-family: monospace;
   }
   button {
-    background: #243140; color: #e6edf3; border: none; padding: 6px 14px;
+    background: var(--btn); color: var(--fg); border: none; padding: 6px 14px;
     border-radius: 4px; cursor: pointer; font-family: monospace;
   }
   button:disabled { opacity: 0.5; cursor: default; }
   button.danger { background: #e5534b; color: white; }
   button.mini { padding: 2px 8px; font-size: 12px; }
-  .count { color: #9aa7b4; font-size: 12px; }
-  .list { flex: 1; min-height: 0; background: #11161c; border: 1px solid #1b2530; border-radius: 8px; }
+  .count { color: var(--muted); font-size: 12px; }
+  .list { flex: 1; min-height: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
   .list.small { flex: none; height: 200px; }
   .leftovers { margin-top: 12px; display: flex; flex-direction: column; }
   .entry { display: flex; gap: 10px; align-items: center; padding: 0 10px; width: 100%; }
   .size { color: #58d6a0; min-width: 80px; text-align: right; }
-  .name { color: #9aa7b4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-  .name em { color: #6e7681; font-style: normal; }
+  .name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .name em { color: var(--faint); font-style: normal; }
   .reg { color: #d29922; font-size: 11px; min-width: 30px; }
 </style>

@@ -27,29 +27,29 @@
     align-items: center;
     gap: 10px;
     padding: 6px 14px;
-    background: #0d1117;
-    border-top: 1px solid #1b2530;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
     font-family: monospace;
     font-size: 12px;
   }
   .bar {
     flex: 1;
     height: 6px;
-    background: #1b2530;
+    background: var(--border);
     border-radius: 3px;
     overflow: hidden;
   }
   .fill { height: 100%; background: #58d6a0; transition: width 0.15s; }
   .text {
-    color: #9aa7b4;
+    color: var(--muted);
     white-space: nowrap;
     max-width: 40%;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   button {
-    background: #243140;
-    color: #e6edf3;
+    background: var(--btn);
+    color: var(--fg);
     border: none;
     padding: 3px 8px;
     border-radius: 4px;

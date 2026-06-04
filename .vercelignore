@@ -1,7 +1,10 @@
 __pycache__/
+.pytest_cache/
 build/
 dist/
 release/
+docs/
+gui/
 installer/
 tests/
 scripts/

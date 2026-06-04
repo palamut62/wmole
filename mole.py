@@ -3602,6 +3602,161 @@ def _serve_delete(req: dict, emit, cancel) -> None:
           "summary": {"ok": ok, "err": err}})
 
 
+def _serve_capture_json(fn) -> dict:
+    """cli_* fonksiyonu stdout'a JSON basar; onu yakala ve sözlük döndür."""
+    import io as _io
+    import contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        fn()
+    text = buf.getvalue().strip()
+    try:
+        return json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        return {"raw": text}
+
+
+def _serve_uninstall_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    query = req.get("query", "")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    apps = filter_apps(list_installed_apps(), query=query, limit=req.get("limit"))
+    for app in apps:
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        size = int(app.get("estimated_size_kb") or 0) * 1024
+        emit({"id": rid, "ev": "item", "path": app.get("uninstall_key", ""),
+              "name": app.get("name", ""), "size": size, "kind": "app",
+              "publisher": app.get("publisher", ""), "version": app.get("version", ""),
+              "install_location": app.get("install_location", ""),
+              "uninstall": app.get("uninstall", ""), "selected": False,
+              "app": app})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(apps)}})
+
+
+def _serve_leftovers(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    app = req.get("app") or {"name": req.get("name", "")}
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    files = find_leftover_candidates(app)
+    for it in files[:200]:
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        emit({"id": rid, "ev": "item", "path": str(it.path), "name": it.path.name,
+              "size": int(it.size), "kind": "leftover-file", "selected": False})
+    for key in find_registry_leftover_candidates(app):
+        emit({"id": rid, "ev": "item", "path": key, "name": key,
+              "size": 0, "kind": "leftover-reg", "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_uninstall_run(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    uninst = req.get("uninstall", "")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    if not uninst:
+        emit({"id": rid, "ev": "error", "code": "no_uninstall_string",
+              "message": "uninstall string yok"})
+        emit({"id": rid, "ev": "done", "ok": False})
+        return
+    try:
+        subprocess.Popen(uninst, shell=True)
+        emit({"id": rid, "ev": "item_result", "path": uninst, "ok": True})
+        emit({"id": rid, "ev": "done", "ok": True})
+    except Exception as exc:
+        emit({"id": rid, "ev": "error", "code": "launch_failed", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+
+
+def _serve_optimize_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    for act in OPTIMIZE_ACTIONS:
+        emit({"id": rid, "ev": "item", "path": act.key, "name": act.title,
+              "size": 0, "kind": "optimize", "description": act.description,
+              "risk": act.risk, "requires_admin": act.requires_admin,
+              "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_optimize_run(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    keys = req.get("keys") or ([req["key"]] if req.get("key") else [])
+    dry_run = bool(req.get("dry_run"))
+    by_key = {a.key: a for a in OPTIMIZE_ACTIONS}
+    emit({"id": rid, "ev": "started", "total_hint": len(keys)})
+    for idx, key in enumerate(keys):
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        act = by_key.get(key)
+        if not act:
+            emit({"id": rid, "ev": "item_result", "path": key, "ok": False,
+                  "error": "unknown action"})
+            continue
+        msg = run_optimize(act, dry_run=dry_run)
+        ok = msg.startswith("ok") or msg.startswith("dry-run")
+        emit({"id": rid, "ev": "item_result", "path": key, "ok": ok,
+              "message": msg, "title": act.title})
+        emit({"id": rid, "ev": "progress", "done": idx + 1, "total": len(keys),
+              "label": act.title})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_ports_list(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    rows = list_dev_ports(include_all=bool(req.get("all_binds")))
+    for r in rows:
+        emit({"id": rid, "ev": "item",
+              "path": f"{r['proto']}:{r['port']}:{r.get('pid') or ''}",
+              "name": f"{r['proto']}/{r['port']}", "size": 0, "kind": "port",
+              "port": r["port"], "pid": r.get("pid"), "proto": r["proto"],
+              "process": r.get("process", ""), "ip": r.get("ip", ""),
+              "hint": r.get("hint", ""), "selected": False})
+    emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(rows)}})
+
+
+def _serve_ports_kill(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    pids = req.get("pids") or ([req["pid"]] if req.get("pid") else [])
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": len(pids)})
+    for idx, pid in enumerate(pids):
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        msg = kill_pid(int(pid), dry_run=dry_run)
+        log_operation("port_kill", Path(f"pid:{pid}"), 0, msg)
+        ok = "killed" in msg or "would kill" in msg or "already gone" in msg
+        emit({"id": rid, "ev": "item_result", "path": str(pid), "ok": ok,
+              "message": msg})
+        emit({"id": rid, "ev": "progress", "done": idx + 1, "total": len(pids),
+              "label": f"pid {pid}"})
+    emit({"id": rid, "ev": "done", "ok": True})
+
+
+def _serve_update(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    payload = _serve_capture_json(
+        lambda: cli_update(json_out=True, yes=bool(req.get("yes")),
+                           dry_run=dry_run, quiet=True))
+    emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
+
+
+def _serve_remove(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": None})
+    payload = _serve_capture_json(
+        lambda: cli_remove(dry_run=dry_run, json_out=True))
+    emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
+
+
 def _serve_handle(req: dict, emit, cancels: dict) -> None:
     """Tek bir isteği işle. emit(event_dict) çağrılır."""
     rid = req.get("id")
@@ -3618,6 +3773,24 @@ def _serve_handle(req: dict, emit, cancels: dict) -> None:
             _serve_scan(req, emit, cancel)
         elif op == "delete":
             _serve_delete(req, emit, cancel)
+        elif op == "uninstall_list":
+            _serve_uninstall_list(req, emit, cancel)
+        elif op == "leftovers":
+            _serve_leftovers(req, emit, cancel)
+        elif op == "uninstall_run":
+            _serve_uninstall_run(req, emit, cancel)
+        elif op == "optimize_list":
+            _serve_optimize_list(req, emit, cancel)
+        elif op == "optimize_run":
+            _serve_optimize_run(req, emit, cancel)
+        elif op == "ports_list":
+            _serve_ports_list(req, emit, cancel)
+        elif op == "ports_kill":
+            _serve_ports_kill(req, emit, cancel)
+        elif op == "update":
+            _serve_update(req, emit, cancel)
+        elif op == "remove":
+            _serve_remove(req, emit, cancel)
         else:
             emit({"id": rid, "ev": "error", "code": "unknown_op",
                   "message": f"unknown op: {op}"})

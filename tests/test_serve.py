@@ -88,5 +88,42 @@ class ServeDeleteTest(unittest.TestCase):
         self.assertTrue(any(e["ev"] == "done" for e in ids))
 
 
+class ServeParityTest(unittest.TestCase):
+    def test_optimize_list(self):
+        events, err = _run_serve([{"id": "o1", "op": "optimize_list"}])
+        ids = [e for e in events if e["id"] == "o1"]
+        items = [e for e in ids if e["ev"] == "item"]
+        self.assertTrue(items, msg=err)
+        self.assertIn("risk", items[0])
+        self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids))
+
+    def test_optimize_dry_run(self):
+        events, err = _run_serve([
+            {"id": "o2", "op": "optimize_run", "keys": ["flush-dns"], "dry_run": True}
+        ])
+        ids = [e for e in events if e["id"] == "o2"]
+        results = [e for e in ids if e["ev"] == "item_result"]
+        self.assertTrue(results and results[0]["ok"], msg=err)
+
+    def test_ports_list(self):
+        events, err = _run_serve([{"id": "pl", "op": "ports_list"}])
+        ids = [e for e in events if e["id"] == "pl"]
+        self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+    def test_uninstall_list(self):
+        events, err = _run_serve([{"id": "u1", "op": "uninstall_list", "limit": 5}])
+        ids = [e for e in events if e["id"] == "u1"]
+        self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+    def test_remove_dry_run(self):
+        events, err = _run_serve([
+            {"id": "rm", "op": "remove", "dry_run": True}
+        ])
+        ids = [e for e in events if e["id"] == "rm"]
+        done = [e for e in ids if e["ev"] == "done"]
+        self.assertTrue(done and done[0]["ok"], msg=err)
+        self.assertIn("payload", done[0])
+
+
 if __name__ == "__main__":
     unittest.main()

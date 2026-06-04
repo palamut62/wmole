@@ -120,6 +120,16 @@
     background: var(--bg);
     color: var(--fg);
   }
+  /* Scrollbar'ı gizle (kaydırma çalışmaya devam eder) */
+  :global(*) {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+  }
+  :global(*::-webkit-scrollbar) {
+    width: 0;
+    height: 0;
+    display: none; /* Chromium/WebView2 */
+  }
   .app {
     display: flex;
     flex-direction: column;

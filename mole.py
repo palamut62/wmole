@@ -90,7 +90,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 

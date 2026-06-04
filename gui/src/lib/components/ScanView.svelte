@@ -54,6 +54,11 @@
     items = [...items];
   }
 
+  function setAll(value: boolean) {
+    items.forEach((i) => (i.selected = value));
+    items = [...items];
+  }
+
   function askDelete() {
     if (selected.length) modalOpen = true;
   }
@@ -86,10 +91,12 @@
     <button onclick={scan} disabled={scanning}
       >{scanning ? "Taranıyor…" : "Tara"}</button
     >
+    <button onclick={() => setAll(true)} disabled={!items.length}>Tümünü Seç</button>
+    <button onclick={() => setAll(false)} disabled={!items.length}>Hiçbiri</button>
     <button class="danger" onclick={askDelete} disabled={!selected.length}
-      >Sil…</button
+      >Sil… ({selected.length})</button
     >
-    <span class="count">{items.length} öğe · {selected.length} seçili</span>
+    <span class="count">{items.length} öğe · {selected.length} seçili · {fmt(selectedBytes)}</span>
   </div>
   <div class="list">
     <VirtualList {items}>
@@ -101,6 +108,7 @@
             onchange={() => toggle(item)}
           />
           <span class="size">{fmt(item.size)}</span>
+          {#if item.category}<span class="cat">{item.category}</span>{/if}
           <span class="name">{item.path}</span>
           <button
             class="mini"
@@ -172,6 +180,7 @@
     cursor: pointer;
   }
   .size { color: #58d6a0; min-width: 80px; text-align: right; }
+  .cat { color: #d29922; font-size: 11px; min-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name {
     color: #9aa7b4;
     overflow: hidden;

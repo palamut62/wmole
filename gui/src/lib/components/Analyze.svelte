@@ -82,6 +82,10 @@
     e.selected = !e.selected;
     entries = [...entries];
   }
+  function setAll(value: boolean) {
+    entries.forEach((e) => (e.selected = value));
+    entries = [...entries];
+  }
   function reveal(p: string) {
     request({ op: "open_path", path: p });
   }
@@ -124,8 +128,10 @@
     <button onclick={() => scan()} disabled={scanning}>{scanning ? "…" : "Tara"}</button>
     <label class="dry"><input type="checkbox" bind:checked={largeMode} onchange={() => scan()} /> Büyük dosyalar</label>
     <button onclick={loadDrives}>Sürücüler</button>
-    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>Sil…</button>
-    <span class="count">{entries.length} öğe · {selected.length} seçili</span>
+    <button onclick={() => setAll(true)} disabled={!entries.length}>Tümünü Seç</button>
+    <button onclick={() => setAll(false)} disabled={!entries.length}>Hiçbiri</button>
+    <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>Sil… ({selected.length})</button>
+    <span class="count">{entries.length} öğe · {selected.length} seçili · {fmt(selectedBytes)}</span>
   </div>
 
   {#if showDrives}

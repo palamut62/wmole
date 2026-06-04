@@ -3,6 +3,7 @@
   import { request } from "$lib/sidecar";
   import type { ScanItem, SidecarEvent } from "$lib/types";
   import ConfirmModal from "./ConfirmModal.svelte";
+  import VirtualList from "./VirtualList.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
 
@@ -17,7 +18,17 @@
   let confirmOpen = $state(false);
   let progress = $state({ done: 0, total: 0, label: "" });
 
-  let reclaimable = $derived(scanItems.reduce((a, i) => a + (i.size || 0), 0));
+  let chosen = $derived(scanItems.filter((i) => i.selected));
+  let reclaimable = $derived(chosen.reduce((a, i) => a + (i.size || 0), 0));
+
+  function toggle(it: ScanItem) {
+    it.selected = !it.selected;
+    scanItems = [...scanItems];
+  }
+  function setAll(v: boolean) {
+    scanItems.forEach((i) => (i.selected = v));
+    scanItems = [...scanItems];
+  }
 
   function fmt(n: number) {
     const u = ["B", "KB", "MB", "GB", "TB"];
@@ -57,7 +68,7 @@
 
   async function quickClean(permanent: boolean) {
     confirmOpen = false;
-    const targets = scanItems.map((i) => i.path);
+    const targets = chosen.map((i) => i.path);
     let ok = 0,
       err = 0;
     await request({ op: "delete", targets, permanent }, (e) => {
@@ -122,11 +133,27 @@
     {:else if scanned && scanItems.length}
       <p>
         ♻ Geri kazanılabilir: <strong class="green">{fmt(reclaimable)}</strong>
-        <span class="muted">({scanItems.length} öğe)</span>
+        <span class="muted">({chosen.length}/{scanItems.length} öğe seçili)</span>
       </p>
       <div class="row">
-        <button class="primary" onclick={() => (confirmOpen = true)}>Hızlı Temizle</button>
+        <button class="primary" onclick={() => (confirmOpen = true)} disabled={!chosen.length}>
+          Hızlı Temizle ({chosen.length})
+        </button>
+        <button onclick={() => setAll(true)}>Tümünü Seç</button>
+        <button onclick={() => setAll(false)}>Hiçbiri</button>
         <button onclick={quickScan}>Yeniden Tara</button>
+      </div>
+      <div class="cleanlist">
+        <VirtualList items={scanItems} rowHeight={24}>
+          {#snippet row(item)}
+            <label class="clitem">
+              <input type="checkbox" checked={item.selected} onchange={() => toggle(item)} />
+              <span class="csize">{fmt(item.size)}</span>
+              <span class="ccat">{item.category ?? ""}</span>
+              <span class="cpath">{item.path}</span>
+            </label>
+          {/snippet}
+        </VirtualList>
       </div>
     {:else if scanned}
       <p class="green">✓ Temizlenecek önemli bir şey yok</p>
@@ -161,7 +188,7 @@
 
 <ConfirmModal
   open={confirmOpen}
-  count={scanItems.length}
+  count={chosen.length}
   bytes={reclaimable}
   onConfirm={quickClean}
   onCancel={() => (confirmOpen = false)}
@@ -195,4 +222,9 @@
   .histlist li { display: flex; gap: 10px; font-size: 12px; }
   .histlist .green { min-width: 80px; text-align: right; }
   .histlist .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cleanlist { height: 220px; margin-top: 10px; background: #0d1117; border: 1px solid #1b2530; border-radius: 6px; }
+  .clitem { display: flex; gap: 10px; align-items: center; padding: 0 10px; width: 100%; font-size: 12px; cursor: pointer; }
+  .csize { color: #58d6a0; min-width: 70px; text-align: right; }
+  .ccat { color: #d29922; min-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cpath { color: #9aa7b4; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

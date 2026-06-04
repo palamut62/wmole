@@ -1,7 +1,17 @@
 <script lang="ts">
   let { active, onSelect }: { active: string; onSelect: (view: string) => void } =
     $props();
-  const views = ["Dashboard", "Analyze", "Clean", "Purge", "Installers"];
+  const views = [
+    "Dashboard",
+    "Analyze",
+    "Clean",
+    "Purge",
+    "Installers",
+    "Uninstall",
+    "Optimize",
+    "Ports",
+    "Maintenance",
+  ];
 </script>
 
 <nav class="sidebar">

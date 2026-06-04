@@ -7,7 +7,7 @@
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
   import { notify } from "$lib/notify";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   let s = $state<Record<string, any>>({});
   let hist = $state<Record<string, any>>({});
@@ -85,7 +85,7 @@
     progress = { done: 0, total: 0, label: "" };
     scanItems = [];
     scanned = false;
-    const msg = `Hızlı temizlik: ${ok} öğe silindi${err ? `, ${err} hata` : ""}`;
+    const msg = `${tr("Hızlı temizlik:")} ${ok} ${tr("öğe silindi")}${err ? `, ${err} ${tr("hata")}` : ""}`;
     toast(msg, err ? "err" : "ok");
     if (ok > 0) notify("wmole", msg);
     loadHistory();
@@ -120,7 +120,7 @@
       </div>
     {/each}
     <div class="sub">
-      Disk: {s.disk_free ? fmt(s.disk_free) + " boş" : "—"} · RAM: {s.memory_used
+      Disk: {s.disk_free ? fmt(s.disk_free) + " " + $t("boş") : "—"} · RAM: {s.memory_used
         ? fmt(s.memory_used)
         : "—"} / {s.memory_total ? fmt(s.memory_total) : "—"} · Uptime: {s.uptime_seconds
         ? Math.floor(s.uptime_seconds / 3600) + "s"

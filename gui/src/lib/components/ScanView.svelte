@@ -6,7 +6,7 @@
   import ConfirmModal from "./ConfirmModal.svelte";
   import { toast } from "$lib/toast";
   import { notify } from "$lib/notify";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   let { mode }: { mode: string } = $props();
   const titleKey: Record<string, string> = {
@@ -100,9 +100,9 @@
     if (!dryRun) items = items.filter((i) => !targets.includes(i.path));
     activeId = null;
     progress = { done: 0, total: 0, label: "" };
-    const msg = `${dryRun ? "Dry-run: " : ""}${ok} ${dryRun ? "önizlendi" : "silindi"}${err ? `, ${err} hata` : ""}`;
+    const msg = `${dryRun ? tr("Dry-run:") + " " : ""}${ok} ${dryRun ? tr("önizlendi") : tr("silindi")}${err ? `, ${err} ${tr("hata")}` : ""}`;
     toast(msg, err ? "err" : "ok");
-    if (!dryRun && ok > 0) notify("wmole temizlik", msg);
+    if (!dryRun && ok > 0) notify(tr("wmole temizlik"), msg);
   }
 </script>
 

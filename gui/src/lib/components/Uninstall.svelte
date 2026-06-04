@@ -5,6 +5,7 @@
   import GenericConfirm from "./GenericConfirm.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
+  import { tr } from "$lib/i18n";
   import { t } from "$lib/i18n";
 
   interface App {
@@ -64,7 +65,7 @@
     const app = selectedApp;
     if (!app) return;
     await request({ op: "uninstall_run", uninstall: app.uninstall });
-    toast(`${app.name} kaldırıcısı başlatıldı`, "info");
+    toast(`${app.name} ${tr("kaldırıcısı başlatıldı")}`, "info");
     // kalan dosyaları tara
     leftovers = [];
     const buf: Leftover[] = [];
@@ -84,7 +85,7 @@
       .filter((l) => l.selected && l.kind === "leftover-file")
       .map((l) => l.path);
     if (!targets.length) {
-      toast("Önce silinecek dosya seç (registry anahtarları elle)", "info");
+      toast(tr("Önce silinecek dosya seç (registry anahtarları elle)"), "info");
       return;
     }
     let ok = 0,
@@ -100,7 +101,7 @@
     });
     leftovers = leftovers.filter((l) => !targets.includes(l.path));
     progress = { done: 0, total: 0, label: "" };
-    toast(`${ok} kalıntı silindi${err ? `, ${err} hata` : ""}`, err ? "err" : "ok");
+    toast(`${ok} ${tr("kalıntı silindi")}${err ? `, ${err} ${tr("hata")}` : ""}`, err ? "err" : "ok");
   }
 </script>
 
@@ -152,7 +153,7 @@
   open={confirmOpen}
   danger
   title="Kaldırma Onayı"
-  message={`${selectedApp?.name ?? ""} için Windows kaldırıcısı başlatılacak. Devam edilsin mi?`}
+  message={`${selectedApp?.name ?? ""} ${tr("için Windows kaldırıcısı başlatılacak. Devam edilsin mi?")}`}
   confirmLabel="Kaldırıcıyı Başlat"
   onConfirm={doUninstall}
   onCancel={() => (confirmOpen = false)}

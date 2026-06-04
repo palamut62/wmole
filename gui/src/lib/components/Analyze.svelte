@@ -6,7 +6,7 @@
   import StatusBar from "./StatusBar.svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
   import { toast } from "$lib/toast";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   interface Entry {
     path: string;
@@ -126,7 +126,7 @@
     });
     entries = entries.filter((i) => !targets.includes(i.path));
     progress = { done: 0, total: 0, label: "" };
-    toast(`${ok} silindi${err ? `, ${err} hata` : ""}`, err ? "err" : "ok");
+    toast(`${ok} ${tr("silindi")}${err ? `, ${err} ${tr("hata")}` : ""}`, err ? "err" : "ok");
   }
 
   onMount(() => scan(""));
@@ -157,7 +157,7 @@
       {#each drives as d}
         <button class="drive" onclick={() => scan(d.mountpoint)}>
           <strong>{d.device}</strong>
-          <span class="muted">{fmt(d.free)} boş / {fmt(d.total)} ({d.percent}%)</span>
+          <span class="muted">{fmt(d.free)} {$t("boş")} / {fmt(d.total)} ({d.percent}%)</span>
         </button>
       {/each}
     </div>

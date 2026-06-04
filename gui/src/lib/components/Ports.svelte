@@ -5,7 +5,7 @@
   import GenericConfirm from "./GenericConfirm.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   interface Port {
     path: string;
@@ -59,7 +59,7 @@
         };
     });
     progress = { done: 0, total: 0, label: "" };
-    toast(`${ok} süreç kapatıldı${err ? `, ${err} hata` : ""}`, err ? "err" : "ok");
+    toast(`${ok} ${tr("süreç kapatıldı")}${err ? `, ${err} ${tr("hata")}` : ""}`, err ? "err" : "ok");
     load();
   }
 </script>
@@ -93,7 +93,7 @@
   open={confirmOpen}
   danger
   title="Süreç Kapatma"
-  message={`${selected.length} süreç sonlandırılacak (kill). Kaydedilmemiş veriler kaybolabilir. Devam?`}
+  message={`${selected.length} ${tr("süreç sonlandırılacak (kill). Kaydedilmemiş veriler kaybolabilir. Devam?")}`}
   confirmLabel="Kapat"
   onConfirm={doKill}
   onCancel={() => (confirmOpen = false)}

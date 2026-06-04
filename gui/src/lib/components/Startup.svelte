@@ -4,6 +4,7 @@
   import type { SidecarEvent } from "$lib/types";
   import GenericConfirm from "./GenericConfirm.svelte";
   import { toast } from "$lib/toast";
+  import { tr } from "$lib/i18n";
   import { t } from "$lib/i18n";
 
   interface Entry { path: string; name: string; location: string; }
@@ -29,7 +30,7 @@
     confirmOpen = false;
     if (!target) return;
     const d = await request({ op: "startup_disable", name: target.name, location: target.location, path: target.path });
-    toast(d.ok ? `${target.name} başlangıçtan kaldırıldı` : "İşlem başarısız", d.ok ? "ok" : "err");
+    toast(d.ok ? `${target.name} ${tr("başlangıçtan kaldırıldı")}` : tr("İşlem başarısız"), d.ok ? "ok" : "err");
     load();
   }
 </script>
@@ -54,7 +55,7 @@
 </div>
 
 <GenericConfirm open={confirmOpen} danger title="Başlangıçtan Kaldır"
-  message={`"${target?.name ?? ""}" sistem başlangıcından kaldırılacak. Devam?`}
+  message={`"${target?.name ?? ""}" ${tr("sistem başlangıcından kaldırılacak. Devam?")}`}
   confirmLabel="Kaldır" onConfirm={disable} onCancel={() => (confirmOpen = false)} />
 
 <style>

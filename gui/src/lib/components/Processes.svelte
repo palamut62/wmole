@@ -5,7 +5,7 @@
   import VirtualList from "./VirtualList.svelte";
   import GenericConfirm from "./GenericConfirm.svelte";
   import { toast } from "$lib/toast";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   interface Proc { path: string; name: string; size: number; pid: number; cpu: number; selected: boolean; }
   let procs = $state<Proc[]>([]);
@@ -41,7 +41,7 @@
     await request({ op: "ports_kill", pids, dry_run: false }, (e) => {
       if (e.ev === "item_result") e.ok ? ok++ : err++;
     });
-    toast(`${ok} süreç kapatıldı${err ? `, ${err} hata` : ""}`, err ? "err" : "ok");
+    toast(`${ok} ${tr("süreç kapatıldı")}${err ? `, ${err} ${tr("hata")}` : ""}`, err ? "err" : "ok");
     load();
   }
 </script>

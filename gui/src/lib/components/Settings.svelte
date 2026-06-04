@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { request } from "$lib/sidecar";
   import { toast } from "$lib/toast";
+  import { tr } from "$lib/i18n";
   import { t } from "$lib/i18n";
 
   let whitelist = $state<string[]>([]);
@@ -40,7 +41,7 @@
       purge_paths: purgePaths,
       config: { large_file_min_mb: Number(largeMinMb) },
     });
-    toast("Ayarlar kaydedildi", "ok");
+    toast(tr("Ayarlar kaydedildi"), "ok");
   }
 
   function addTo(list: "wl" | "dl" | "pp") {
@@ -56,23 +57,23 @@
 
   async function installCompletion() {
     const d = await request({ op: "completion_install" });
-    toast(d.ok ? "PowerShell completion kuruldu" : "Kurulum başarısız", d.ok ? "ok" : "err");
+    toast(tr(d.ok ? "PowerShell completion kuruldu" : "Kurulum başarısız"), d.ok ? "ok" : "err");
   }
   async function elevate() {
     try {
       await invoke("relaunch_admin");
     } catch (e) {
-      toast("Yükseltme başarısız: " + e, "err");
+      toast(tr("Yükseltme başarısız:") + " " + e, "err");
     }
   }
   async function setSchedule() {
     const d = await request({ op: "schedule_set", day: schedDay, time: schedTime });
-    toast(d.ok ? "Haftalık temizlik planlandı" : "Planlama başarısız", d.ok ? "ok" : "err");
+    toast(tr(d.ok ? "Haftalık temizlik planlandı" : "Planlama başarısız"), d.ok ? "ok" : "err");
     load();
   }
   async function clearSchedule() {
     const d = await request({ op: "schedule_clear" });
-    toast(d.ok ? "Zamanlama kaldırıldı" : "Kaldırma başarısız", d.ok ? "ok" : "err");
+    toast(tr(d.ok ? "Zamanlama kaldırıldı" : "Kaldırma başarısız"), d.ok ? "ok" : "err");
     load();
   }
 </script>

@@ -5,7 +5,7 @@
   import GenericConfirm from "./GenericConfirm.svelte";
   import StatusBar from "./StatusBar.svelte";
   import { toast } from "$lib/toast";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   interface Action {
     path: string; // key
@@ -63,7 +63,7 @@
     });
     progress = { done: 0, total: 0, label: "" };
     toast(
-      `${dryRun ? "Dry-run: " : ""}${ok} işlem tamam${err ? `, ${err} hata` : ""}`,
+      `${dryRun ? tr("Dry-run:") + " " : ""}${ok} ${tr("işlem tamam")}${err ? `, ${err} ${tr("hata")}` : ""}`,
       err ? "err" : "ok",
     );
   }
@@ -94,10 +94,10 @@
   open={confirmOpen}
   danger
   title="Yüksek Riskli İşlemler"
-  message={`Seçili işlemlerden bazıları YÜKSEK RİSKLİ ve sistemi etkileyebilir:\n\n${selected
+  message={`${tr("Seçili işlemlerden bazıları YÜKSEK RİSKLİ ve sistemi etkileyebilir:")}\n\n${selected
     .filter((a) => a.risk === "high")
     .map((a) => "• " + a.name)
-    .join("\n")}\n\nDevam edilsin mi?`}
+    .join("\n")}\n\n${tr("Devam edilsin mi?")}`}
   confirmLabel="Evet, Çalıştır"
   onConfirm={execute}
   onCancel={() => (confirmOpen = false)}

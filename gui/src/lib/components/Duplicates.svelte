@@ -5,7 +5,7 @@
   import StatusBar from "./StatusBar.svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
   import { toast } from "$lib/toast";
-  import { t } from "$lib/i18n";
+  import { t, tr } from "$lib/i18n";
 
   interface Dup { path: string; name: string; size: number; group: string; selected: boolean; }
   let path = $state("");
@@ -50,7 +50,7 @@
     });
     items = items.filter((i) => !targets.includes(i.path));
     progress = { done: 0, total: 0, label: "" };
-    toast(`${ok} kopya silindi${err ? `, ${err} hata` : ""}`, err ? "err" : "ok");
+    toast(`${ok} ${tr("kopya silindi")}${err ? `, ${err} ${tr("hata")}` : ""}`, err ? "err" : "ok");
   }
 </script>
 
@@ -62,7 +62,7 @@
     <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>{$t("Sil…")} ({selected.length})</button>
     <span class="count">{items.length} {$t("kopya")} · {fmt(selectedBytes)} {$t("seçili")}</span>
   </div>
-  <p class="hint">≥1MB dosyalar boyut+MD5 ile karşılaştırılır. Aynı renkli grup = aynı içerik. Her gruptan birini saklamanız önerilir.</p>
+  <p class="hint">{$t("≥1MB dosyalar boyut+MD5 ile karşılaştırılır. Aynı renkli grup = aynı içerik. Her gruptan birini saklamanız önerilir.")}</p>
   <div class="list">
     <VirtualList items={items} rowHeight={26}>
       {#snippet row(item)}

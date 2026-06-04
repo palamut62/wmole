@@ -1,4 +1,4 @@
-import { writable, derived } from "svelte/store";
+import { writable, derived, get } from "svelte/store";
 
 export type Lang = "tr" | "en";
 
@@ -149,6 +149,48 @@ const EN: Record<string, string> = {
   "~/.wmole'u Sil": "Delete ~/.wmole",
   // Duplicates
   "Yinelenen Dosyalar": "Duplicate Files",
+  "≥1MB dosyalar boyut+MD5 ile karşılaştırılır. Aynı renkli grup = aynı içerik. Her gruptan birini saklamanız önerilir.":
+    "Files ≥1MB are compared by size+MD5. Same-colored group = identical content. Keeping one per group is recommended.",
+  // Toast / bildirim mesajları
+  silindi: "deleted",
+  önizlendi: "previewed",
+  hata: "errors",
+  "kopya silindi": "duplicates deleted",
+  "süreç kapatıldı": "processes killed",
+  "kalıntı silindi": "leftovers deleted",
+  "Ayarlar kaydedildi": "Settings saved",
+  "PowerShell completion kuruldu": "PowerShell completion installed",
+  "Kurulum başarısız": "Installation failed",
+  "Yükseltme başarısız:": "Elevation failed:",
+  "Haftalık temizlik planlandı": "Weekly cleanup scheduled",
+  "Planlama başarısız": "Scheduling failed",
+  "Zamanlama kaldırıldı": "Schedule removed",
+  "Kaldırma başarısız": "Removal failed",
+  "Güncelleme kontrolü bitti": "Update check complete",
+  "Güncelleme denendi": "Update attempted",
+  "wmole durumu (~/.wmole) kaldırıldı": "wmole state (~/.wmole) removed",
+  "başlangıçtan kaldırıldı": "removed from startup",
+  "İşlem başarısız": "Action failed",
+  "kaldırıcısı başlatıldı": "uninstaller launched",
+  "Önce silinecek dosya seç (registry anahtarları elle)":
+    "Select files to delete first (registry keys manually)",
+  "Hızlı temizlik:": "Quick clean:",
+  "öğe silindi": "items deleted",
+  "Dry-run:": "Dry-run:",
+  "işlem tamam": "actions done",
+  "wmole temizlik": "wmole cleanup",
+  // Onay (modal) mesajları
+  "için Windows kaldırıcısı başlatılacak. Devam edilsin mi?":
+    "— its Windows uninstaller will launch. Continue?",
+  "Seçili işlemlerden bazıları YÜKSEK RİSKLİ ve sistemi etkileyebilir:":
+    "Some selected actions are HIGH RISK and may affect the system:",
+  "Devam edilsin mi?": "Continue?",
+  "süreç sonlandırılacak (kill). Kaydedilmemiş veriler kaybolabilir. Devam?":
+    "processes will be terminated (kill). Unsaved data may be lost. Continue?",
+  "sistem başlangıcından kaldırılacak. Devam?":
+    "will be removed from system startup. Continue?",
+  "~/.wmole klasörü kalıcı olarak silinecek (config, log, cache). Geri alınamaz. Devam?":
+    "The ~/.wmole folder will be permanently deleted (config, logs, cache). Irreversible. Continue?",
 };
 
 function initial(): Lang {
@@ -164,6 +206,11 @@ export const lang = writable<Lang>(initial());
 export function setLang(l: Lang) {
   lang.set(l);
   if (typeof localStorage !== "undefined") localStorage.setItem("wmole-lang", l);
+}
+
+/** Reaktif olmayan çevirici (toast/fonksiyon içi kullanım için). */
+export function tr(key: string): string {
+  return get(lang) === "tr" ? key : EN[key] ?? key;
 }
 
 export function toggleLang() {

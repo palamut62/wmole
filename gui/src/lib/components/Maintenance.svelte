@@ -2,6 +2,7 @@
   import { request } from "$lib/sidecar";
   import GenericConfirm from "./GenericConfirm.svelte";
   import { toast } from "$lib/toast";
+  import { tr } from "$lib/i18n";
   import { t } from "$lib/i18n";
 
   let busy = $state(false);
@@ -10,12 +11,12 @@
 
   async function checkUpdate(dryRun: boolean) {
     busy = true;
-    updateOut = "Çalışıyor…";
+    updateOut = tr("Taranıyor…");
     const done = await request({ op: "update", dry_run: dryRun, yes: !dryRun });
     busy = false;
     const payload: any = done.payload ?? {};
     updateOut = JSON.stringify(payload, null, 2);
-    toast(dryRun ? "Güncelleme kontrolü bitti" : "Güncelleme denendi", "info");
+    toast(tr(dryRun ? "Güncelleme kontrolü bitti" : "Güncelleme denendi"), "info");
   }
 
   async function doRemove() {
@@ -25,7 +26,7 @@
     busy = false;
     const payload: any = done.payload ?? {};
     updateOut = JSON.stringify(payload, null, 2);
-    toast("wmole durumu (~/.wmole) kaldırıldı", "ok");
+    toast(tr("wmole durumu (~/.wmole) kaldırıldı"), "ok");
   }
 </script>
 
@@ -58,7 +59,7 @@
   open={removeConfirm}
   danger
   title="wmole Durumunu Sil"
-  message={"~/.wmole klasörü kalıcı olarak silinecek (config, log, cache). Geri alınamaz. Devam?"}
+  message={tr("~/.wmole klasörü kalıcı olarak silinecek (config, log, cache). Geri alınamaz. Devam?")}
   confirmLabel="Kalıcı Sil"
   onConfirm={doRemove}
   onCancel={() => (removeConfirm = false)}

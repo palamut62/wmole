@@ -3484,6 +3484,188 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     apps_cache = list_installed_apps()
                     msg = f"Reloaded {len(apps_cache)} programs."
 # ---------- CLI ----------
+def status_payload() -> dict:
+    """Machine-readable system status. Returns {} if psutil unavailable."""
+    if not psutil:
+        return {}
+    vm = psutil.virtual_memory()
+    du = psutil.disk_usage(USER.anchor or 'C:\\')
+    net = psutil.net_io_counters()
+    dio = psutil.disk_io_counters()
+    bat = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
+    boot = psutil.boot_time()
+    sysinfo = platform.uname()
+    temps = {}
+    if hasattr(psutil, "sensors_temperatures"):
+        try:
+            temps = psutil.sensors_temperatures() or {}
+        except Exception:
+            temps = {}
+    return {
+        "health": health_score(), "cpu_percent": psutil.cpu_percent(interval=0.3),
+        "memory_percent": vm.percent, "memory_used": vm.used, "memory_total": vm.total,
+        "disk_percent": du.percent, "disk_free": du.free, "disk_total": du.total,
+        "disk_read_bytes": (dio.read_bytes if dio else 0), "disk_write_bytes": (dio.write_bytes if dio else 0),
+        "net_up_bytes": net.bytes_sent, "net_down_bytes": net.bytes_recv,
+        "uptime_seconds": int(time.time() - boot),
+        "battery_percent": (bat.percent if bat else None), "power_plugged": (bat.power_plugged if bat else None),
+        "device": {"system": sysinfo.system, "release": sysinfo.release, "node": sysinfo.node},
+        "temperature_sensors": {k: [{"label": t.label, "current": t.current} for t in v[:3]] for k, v in temps.items()},
+    }
+
+
+# ---------- serve (NDJSON daemon for Tauri GUI) ----------
+import threading as _serve_threading
+
+
+def _serve_emit(lock, event: dict) -> None:
+    """Tek satır NDJSON olayı stdout'a atomik yaz."""
+    line = json.dumps(event, ensure_ascii=False)
+    with lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+def _serve_scan(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    mode = req.get("mode", "clean")
+    paths = [Path(p) for p in req.get("paths", []) if p]
+    emit({"id": rid, "ev": "started", "total_hint": None})
+
+    if mode == "analyze":
+        target = paths[0] if paths else USER
+        min_large = int(load_config().get("large_file_min_mb", 512)) * 1024 * 1024
+        result = analyze_path(target, large_file_min=min_large)
+        for entry in result["entries"]:
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            emit({"id": rid, "ev": "item", "path": str(target / entry["name"]),
+                  "name": entry["name"], "size": entry["size"],
+                  "kind": "dir" if entry["is_dir"] else "file", "selected": False})
+        emit({"id": rid, "ev": "done", "ok": True,
+              "summary": {"count": len(result["entries"]),
+                          "bytes": result["total_size"]}})
+        return
+
+    profile = {"clean": "clean", "purge": "purge",
+               "installers": "installers"}.get(mode, "clean")
+    scanner = Scanner(whitelist=load_whitelist(), profile=profile,
+                      roots=paths or None, use_cache=not req.get("no_cache"))
+    scanner.run()
+    if cancel.is_set():
+        emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+        return
+    report = collect_selected_targets(scanner.categories, estimated=not paths)
+    count = 0
+    total = report.get("total", 0)
+    for cat in scanner.categories:
+        for it in cat.items:
+            if cancel.is_set():
+                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+                return
+            if it.deleted:
+                continue
+            count += 1
+            emit({"id": rid, "ev": "item", "path": str(it.path),
+                  "name": it.path.name, "size": int(it.size),
+                  "kind": cat.key, "category": cat.title,
+                  "selected": bool(it.selected)})
+    emit({"id": rid, "ev": "done", "ok": True,
+          "summary": {"count": count, "bytes": total}})
+
+
+def _serve_delete(req: dict, emit, cancel) -> None:
+    rid = req.get("id")
+    targets = [Path(p) for p in req.get("targets", []) if p]
+    use_trash = not bool(req.get("permanent"))
+    dry_run = bool(req.get("dry_run"))
+    emit({"id": rid, "ev": "started", "total_hint": len(targets)})
+    ok = err = 0
+    for idx, path in enumerate(targets):
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True,
+                  "summary": {"ok": ok, "err": err}})
+            return
+        error = delete_path(path, use_trash=use_trash, dry_run=dry_run)
+        if error:
+            err += 1
+            emit({"id": rid, "ev": "item_result", "path": str(path),
+                  "ok": False, "error": error})
+        else:
+            ok += 1
+            emit({"id": rid, "ev": "item_result", "path": str(path),
+                  "ok": True, "trashed": use_trash, "dry_run": dry_run})
+        emit({"id": rid, "ev": "progress", "done": idx + 1, "total": len(targets),
+              "label": str(path)})
+    emit({"id": rid, "ev": "done", "ok": True,
+          "summary": {"ok": ok, "err": err}})
+
+
+def _serve_handle(req: dict, emit, cancels: dict) -> None:
+    """Tek bir isteği işle. emit(event_dict) çağrılır."""
+    rid = req.get("id")
+    op = req.get("op")
+    cancel = _serve_threading.Event()
+    if rid is not None:
+        cancels[rid] = cancel
+    try:
+        if op == "ping":
+            emit({"id": rid, "ev": "done", "ok": True})
+        elif op == "status":
+            emit({"id": rid, "ev": "done", "ok": True, "payload": status_payload()})
+        elif op == "scan":
+            _serve_scan(req, emit, cancel)
+        elif op == "delete":
+            _serve_delete(req, emit, cancel)
+        else:
+            emit({"id": rid, "ev": "error", "code": "unknown_op",
+                  "message": f"unknown op: {op}"})
+            emit({"id": rid, "ev": "done", "ok": False})
+    except Exception as exc:  # bir istek hatası döngüyü düşürmesin
+        emit({"id": rid, "ev": "error", "code": "exception", "message": str(exc)})
+        emit({"id": rid, "ev": "done", "ok": False})
+    finally:
+        cancels.pop(rid, None)
+
+
+def cmd_serve() -> None:
+    """Kalıcı NDJSON istek/olay döngüsü. stdin'den satır-başına-bir-JSON okur."""
+    out_lock = _serve_threading.Lock()
+    cancels: dict = {}  # rid -> threading.Event
+    workers: list = []
+
+    _serve_emit(out_lock, {"id": None, "ev": "ready"})
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            req = json.loads(raw)
+        except json.JSONDecodeError:
+            _serve_emit(out_lock, {"id": None, "ev": "error",
+                                   "code": "bad_json", "message": raw[:200]})
+            continue
+        rid = req.get("id")
+        if req.get("op") == "cancel":
+            ev = cancels.get(rid)
+            if ev:
+                ev.set()
+            continue
+        worker = _serve_threading.Thread(
+            target=_serve_handle,
+            args=(req, lambda e: _serve_emit(out_lock, e), cancels),
+            daemon=True,
+        )
+        worker.start()
+        workers.append(worker)
+        workers = [w for w in workers if w.is_alive()]
+
+    # stdin kapandı: çalışan worker'ların olaylarını yazmasını bekle (graceful shutdown).
+    for w in workers:
+        w.join(timeout=120)
+
+
 def cli_clean(dry_run: bool, json_out: bool, roots: Optional[List[Path]] = None,
               whitelist: Optional[List[Path]] = None, use_cache: bool = True) -> None:
     """Headless: scan, pick the safe_default categories, ask once, delete."""
@@ -4322,7 +4504,7 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
 def main_cli() -> None:
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
-                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports"])
+                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports", "serve"])
     p.add_argument("targets", nargs="*", help="optional paths for analyze/purge/installers")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true", dest="json_out")
@@ -4343,7 +4525,7 @@ def main_cli() -> None:
 
     # Do not start a final background check while the user is disabling it.
     # Other commands preserve the fire-and-forget startup behavior.
-    if not (args.mode == "update" and args.disable_auto):
+    if args.mode != "serve" and not (args.mode == "update" and args.disable_auto):
         start_auto_update_check()
 
     target_paths = [Path(t).expanduser() for t in args.targets]
@@ -4366,33 +4548,10 @@ def main_cli() -> None:
         roots = target_paths or [USER / "Downloads", USER / "Desktop"]
         cli_categories(build_installer_categories(roots),
                        dry_run=args.dry_run, json_out=args.json_out, label="installers")
+    elif args.mode == "serve":
+        cmd_serve()
     elif args.mode == "status" and args.json_out:
-        if psutil:
-            vm = psutil.virtual_memory(); du = psutil.disk_usage(USER.anchor or 'C:\\')
-            net = psutil.net_io_counters()
-            dio = psutil.disk_io_counters()
-            bat = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
-            boot = psutil.boot_time()
-            sysinfo = platform.uname()
-            temps = {}
-            if hasattr(psutil, "sensors_temperatures"):
-                try:
-                    temps = psutil.sensors_temperatures() or {}
-                except Exception:
-                    temps = {}
-            print(json.dumps({
-                "health": health_score(), "cpu_percent": psutil.cpu_percent(interval=0.3),
-                "memory_percent": vm.percent, "memory_used": vm.used, "memory_total": vm.total,
-                "disk_percent": du.percent, "disk_free": du.free, "disk_total": du.total,
-                "disk_read_bytes": (dio.read_bytes if dio else 0), "disk_write_bytes": (dio.write_bytes if dio else 0),
-                "net_up_bytes": net.bytes_sent, "net_down_bytes": net.bytes_recv,
-                "uptime_seconds": int(time.time() - boot),
-                "battery_percent": (bat.percent if bat else None), "power_plugged": (bat.power_plugged if bat else None),
-                "device": {"system": sysinfo.system, "release": sysinfo.release, "node": sysinfo.node},
-                "temperature_sensors": {k: [{"label": t.label, "current": t.current} for t in v[:3]] for k, v in temps.items()},
-            }, indent=2))
-        else:
-            print("{}")
+        print(json.dumps(status_payload(), indent=2))
     elif args.mode == "status":
         cli_status()
     elif args.mode == "optimize":

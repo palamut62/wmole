@@ -12,13 +12,17 @@ export type Op =
   | "ports_list"
   | "ports_kill"
   | "update"
-  | "remove";
+  | "remove"
+  | "cleanup_history"
+  | "drives"
+  | "open_path";
 
 export interface Request {
   id: string;
   op: Op;
-  mode?: "analyze" | "clean" | "purge" | "installers";
+  mode?: "analyze" | "clean" | "purge" | "installers" | "categories" | "large";
   paths?: string[];
+  path?: string;
   targets?: string[];
   permanent?: boolean;
   dry_run?: boolean;

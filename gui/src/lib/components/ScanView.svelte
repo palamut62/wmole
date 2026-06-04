@@ -102,6 +102,14 @@
           />
           <span class="size">{fmt(item.size)}</span>
           <span class="name">{item.path}</span>
+          <button
+            class="mini"
+            onclick={(e) => {
+              e.preventDefault();
+              request({ op: "open_path", path: item.path });
+            }}
+            title="Explorer'da aç">↗</button
+          >
         </label>
       {/snippet}
     </VirtualList>
@@ -169,5 +177,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+  }
+  .mini {
+    background: #243140;
+    color: #e6edf3;
+    border: none;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 12px;
   }
 </style>

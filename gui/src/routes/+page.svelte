@@ -3,15 +3,17 @@
   import TopBar from "$lib/components/TopBar.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import Dashboard from "$lib/components/Dashboard.svelte";
+  import Analyze from "$lib/components/Analyze.svelte";
   import ScanView from "$lib/components/ScanView.svelte";
   import Uninstall from "$lib/components/Uninstall.svelte";
   import Optimize from "$lib/components/Optimize.svelte";
   import Ports from "$lib/components/Ports.svelte";
   import Maintenance from "$lib/components/Maintenance.svelte";
+  import Help from "$lib/components/Help.svelte";
   import Toast from "$lib/components/Toast.svelte";
 
   let active = $state("Dashboard");
-  const scanModes = ["Analyze", "Clean", "Purge", "Installers"];
+  const scanModes = ["Clean", "Purge", "Installers", "Categories"];
 </script>
 
 <div class="app">
@@ -21,6 +23,8 @@
     <main class="content">
       {#if active === "Dashboard"}
         <Dashboard />
+      {:else if active === "Analyze"}
+        <Analyze />
       {:else if scanModes.includes(active)}
         {#key active}
           <ScanView mode={active.toLowerCase()} />
@@ -33,6 +37,8 @@
         <Ports />
       {:else if active === "Maintenance"}
         <Maintenance />
+      {:else if active === "Help"}
+        <Help />
       {/if}
     </main>
   </div>

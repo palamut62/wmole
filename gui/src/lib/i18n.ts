@@ -32,6 +32,8 @@ const EN: Record<string, string> = {
   // Ortak butonlar/etiketler
   Tara: "Scan",
   "Analize Başla": "Start Analysis",
+  "sidecar bağlı": "sidecar connected",
+  "bağlanıyor…": "connecting…",
   "Taranıyor…": "Scanning…",
   "Tümünü Seç": "Select All",
   Hiçbiri: "None",

@@ -168,9 +168,9 @@
       {/each}
       <button
         class="start"
-        onclick={() => selectedDrive && scan(selectedDrive)}
-        disabled={!selectedDrive || scanning}
-      >▶ {$t("Analize Başla")}</button>
+        onclick={() => scan(selectedDrive ?? path)}
+        disabled={!(selectedDrive ?? path) || scanning}
+      >{scanning ? "…" : "▶ " + $t("Analize Başla")}</button>
     </div>
   {/if}
 

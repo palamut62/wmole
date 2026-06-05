@@ -5,6 +5,13 @@
   import { toast } from "$lib/toast";
   import { tr } from "$lib/i18n";
   import { t } from "$lib/i18n";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { checkForUpdate, update } from "$lib/updater";
+
+  let appVersion = $state("");
+  onMount(async () => {
+    try { appVersion = await getVersion(); } catch {}
+  });
 
   let whitelist = $state<string[]>([]);
   let denylist = $state<string[]>([]);
@@ -130,6 +137,14 @@
       <button class="primary" onclick={setSchedule}>{$t("Planla")}</button>
       {#if schedule.enabled}<button class="danger" onclick={clearSchedule}>{$t("Kaldır")}</button>{/if}
     </div>
+  </section>
+
+  <section class="card">
+    <h3>{$t("Güncellemeler")}</h3>
+    <p class="muted">{$t("Sürüm")}: v{appVersion || "…"}</p>
+    <button onclick={() => checkForUpdate(false)} disabled={$update.phase === "checking"}>
+      {$update.phase === "checking" ? $t("Kontrol ediliyor…") : $t("Güncellemeleri kontrol et")}
+    </button>
   </section>
 
   <section class="card">

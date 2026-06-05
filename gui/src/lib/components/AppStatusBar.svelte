@@ -1,12 +1,24 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { connected, activity } from "$lib/sidecar";
+  import { update, openUpdateModal } from "$lib/updater";
   import { t } from "$lib/i18n";
 
   let { section = "" }: { section?: string } = $props();
-  const VERSION = "v0.5.0";
+
+  let version = $state("");
+  onMount(async () => {
+    try { version = await getVersion(); } catch {}
+  });
 
   let pct = $derived(
     $activity.total > 0 ? Math.round(($activity.done / $activity.total) * 100) : 0,
+  );
+
+  // Güncelleme durumu: available/ready/downloading → status bar göstergesi.
+  let updReady = $derived(
+    $update.phase === "available" || $update.phase === "ready",
   );
 </script>
 
@@ -31,7 +43,22 @@
   {/if}
 
   <span class="sep">·</span>
-  <span class="ver">{VERSION}</span>
+  <span class="ver">v{version || "…"}</span>
+
+  {#if $update.phase === "downloading"}
+    <button class="upd dl" title={$t("İndiriliyor")} onclick={openUpdateModal}>
+      ⟳ {$update.pct}%
+    </button>
+  {:else if updReady}
+    <button
+      class="upd"
+      title={$t("Yeni sürüm hazır") + " v" + $update.latest}
+      onclick={openUpdateModal}
+      aria-label={$t("Yeni sürüm hazır")}
+    >
+      ⬇ v{$update.latest}
+    </button>
+  {/if}
 </footer>
 
 <style>
@@ -58,4 +85,24 @@
   .bar { width: 120px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
   .fill { display: block; height: 100%; background: #58d6a0; transition: width 0.15s; }
   .ver { color: var(--faint); }
+  .upd {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #58d6a0;
+    color: #04150d;
+    border: none;
+    padding: 2px 8px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: bold;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .upd.dl { background: var(--btn); color: var(--fg); animation: none; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(88, 214, 160, 0.5); }
+    50% { box-shadow: 0 0 6px 2px rgba(88, 214, 160, 0.5); }
+  }
 </style>

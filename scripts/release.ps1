@@ -60,6 +60,12 @@ if (-not $Notes) {
 $notesPath = Join-Path $env:TEMP "wmole-release-$Version.md"
 $Notes | Set-Content $notesPath -Encoding UTF8
 
+# --- 4.5 SHA-256 üret (in-app updater doğrulaması için) ---
+$shaPath = "$installer.sha256"
+$hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+"$hash  wmole-$Version-setup.exe" | Set-Content $shaPath -Encoding ASCII
+Write-Host "   sha256: $hash"
+
 # --- 5. Create GitHub release (replace if tag exists) ---
 git tag -f $tag | Out-Null
 git push origin $tag --force | Out-Null
@@ -75,7 +81,7 @@ if ($exists) {
   git push origin $tag --force | Out-Null
 }
 
-$ghArgs = @("release", "create", $tag, $installer, $exe,
+$ghArgs = @("release", "create", $tag, $installer, $shaPath, $exe,
             "--title", "wmole $tag", "--notes-file", $notesPath)
 if ($Prerelease) { $ghArgs += "--prerelease" }
 & gh @ghArgs

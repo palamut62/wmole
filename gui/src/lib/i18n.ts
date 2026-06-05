@@ -196,6 +196,30 @@ const EN: Record<string, string> = {
     "will be removed from system startup. Continue?",
   "~/.wmole klasörü kalıcı olarak silinecek (config, log, cache). Geri alınamaz. Devam?":
     "The ~/.wmole folder will be permanently deleted (config, logs, cache). Irreversible. Continue?",
+  // Güncelleme (updater)
+  "Güncellemeler": "Updates",
+  "Sürüm": "Version",
+  "Güncellemeleri kontrol et": "Check for updates",
+  "Kontrol ediliyor…": "Checking…",
+  "Yeni sürüm hazır": "New version available",
+  "Mevcut": "Current",
+  "İndir": "Download",
+  "Sonra": "Later",
+  "İndiriliyor": "Downloading",
+  "İndirme tamamlandı": "Download complete",
+  "Güncellemeyi uygulamak için uygulama yeniden başlatılacak.":
+    "The app will restart to apply the update.",
+  "Yeniden başlat ve kur": "Restart & install",
+  "Güncelleme hatası": "Update error",
+  "Tekrar dene": "Retry",
+  "Zaten en güncel sürümdesiniz": "You're already up to date",
+  "Güncelleme kontrolü başarısız": "Update check failed",
+  "İndirilen dosya bozuk (doğrulama hatası)":
+    "Downloaded file is corrupt (verification failed)",
+  "Disk alanı yetersiz veya yazma hatası": "Insufficient disk space or write error",
+  "Ağ hatası": "Network error",
+  "İndirme başarısız": "Download failed",
+  "Kurulum başlatılamadı": "Could not start installer",
 };
 
 function initial(): Lang {

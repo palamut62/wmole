@@ -20,6 +20,8 @@
   import Help from "$lib/components/Help.svelte";
   import Toast from "$lib/components/Toast.svelte";
   import AppStatusBar from "$lib/components/AppStatusBar.svelte";
+  import UpdateModal from "$lib/components/UpdateModal.svelte";
+  import { checkForUpdate } from "$lib/updater";
   import { t } from "$lib/i18n";
 
   let active = $state("Dashboard");
@@ -40,6 +42,10 @@
     if (typeof localStorage !== "undefined" && !localStorage.getItem("wmole-onboarded")) {
       showOnboard = true;
     }
+    // Açılışta + 6 saatte bir sessiz güncelleme kontrolü.
+    setTimeout(() => checkForUpdate(true), 4000);
+    const iv = setInterval(() => checkForUpdate(true), 6 * 60 * 60 * 1000);
+    return () => clearInterval(iv);
   });
   function dismissOnboard(goClean: boolean) {
     showOnboard = false;
@@ -85,6 +91,7 @@
   <AppStatusBar section={$t(sectionLabels[active] ?? active)} />
 </div>
 <Toast />
+<UpdateModal />
 
 {#if showOnboard}
   <div class="ob-backdrop">

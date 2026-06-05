@@ -90,7 +90,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -3631,20 +3631,6 @@ def _serve_delete(req: dict, emit, cancel) -> None:
           "summary": {"ok": ok, "err": err}})
 
 
-def _serve_capture_json(fn) -> dict:
-    """cli_* fonksiyonu stdout'a JSON basar; onu yakala ve sözlük döndür."""
-    import io as _io
-    import contextlib as _ctx
-    buf = _io.StringIO()
-    with _ctx.redirect_stdout(buf):
-        fn()
-    text = buf.getvalue().strip()
-    try:
-        return json.loads(text) if text else {}
-    except json.JSONDecodeError:
-        return {"raw": text}
-
-
 def _serve_uninstall_list(req: dict, emit, cancel) -> None:
     rid = req.get("id")
     query = req.get("query", "")
@@ -3771,9 +3757,9 @@ def _serve_update(req: dict, emit, cancel) -> None:
     rid = req.get("id")
     dry_run = bool(req.get("dry_run"))
     emit({"id": rid, "ev": "started", "total_hint": None})
-    payload = _serve_capture_json(
-        lambda: cli_update(json_out=True, yes=bool(req.get("yes")),
-                           dry_run=dry_run, quiet=True))
+    payload: dict = {}
+    cli_update(json_out=False, yes=bool(req.get("yes")),
+               dry_run=dry_run, quiet=True, sink=payload)
     emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
 
 
@@ -3781,8 +3767,8 @@ def _serve_remove(req: dict, emit, cancel) -> None:
     rid = req.get("id")
     dry_run = bool(req.get("dry_run"))
     emit({"id": rid, "ev": "started", "total_hint": None})
-    payload = _serve_capture_json(
-        lambda: cli_remove(dry_run=dry_run, json_out=True))
+    payload: dict = {}
+    cli_remove(dry_run=dry_run, json_out=False, sink=payload)
     emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
 
 
@@ -4581,7 +4567,7 @@ def _download(url: str, dest: Path, on_progress=None) -> None:
 
 
 def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
-               quiet: bool = False) -> str:
+               quiet: bool = False, sink: Optional[dict] = None) -> str:
     """Self-update.
 
     - Frozen exe (PyInstaller install): check GitHub latest release, download
@@ -4598,7 +4584,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
         if not rel:
             steps.append({"step": "fetch-release", "code": 1,
                           "output": "could not reach GitHub API"})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
         latest_tag = rel.get("tag_name", "")
         latest_ver = _parse_semver(latest_tag)
         current_ver = _parse_semver(__version__)
@@ -4607,18 +4593,18 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
         if latest_ver <= current_ver:
             steps.append({"step": "decision", "code": 0,
                           "output": "already up to date"})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
 
         if quiet:
             steps.append({"step": "decision", "code": 0,
                           "output": f"update available: {latest_tag}; restart wmole to install automatically"})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
 
         asset = _pick_installer_asset(rel.get("assets", []))
         if not asset:
             steps.append({"step": "asset", "code": 1,
                           "output": "no installer asset found in release"})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
         url = asset["browser_download_url"]
         name = Path(asset["name"]).name  # strip any path components from the API value
         steps.append({"step": "asset", "code": 0, "output": name})
@@ -4628,7 +4614,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
                           "output": f"would download {url}"})
             steps.append({"step": "install", "code": 0,
                           "output": "would run /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
 
         if not yes and not json_out:
             try:
@@ -4637,7 +4623,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
                 ans = ""
             if ans not in ("y", "yes"):
                 steps.append({"step": "decision", "code": 1, "output": "user declined"})
-                return _emit_update(steps, json_out, quiet)
+                return _emit_update(steps, json_out, quiet, sink)
 
         dest = TEMP / name
         try:
@@ -4655,7 +4641,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
                           "output": f"{dest} ({dest.stat().st_size} bytes)"})
         except Exception as exc:
             steps.append({"step": "download", "code": 1, "output": str(exc)})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
 
         # Launch installer detached so it can replace our own exe after we exit.
         try:
@@ -4669,12 +4655,12 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
                           "output": "installer launched in background; exiting"})
             log_operation("self_update", dest, dest.stat().st_size,
                           f"{__version__} -> {latest_tag}")
-            _emit_update(steps, json_out, quiet)
+            _emit_update(steps, json_out, quiet, sink)
             # Exit so the installer can overwrite the running exe.
             os._exit(0)
         except Exception as exc:
             steps.append({"step": "install", "code": 1, "output": str(exc)})
-            return _emit_update(steps, json_out, quiet)
+            return _emit_update(steps, json_out, quiet, sink)
 
     # Source checkout path (legacy)
     if path_exists(Path(".git")):
@@ -4684,7 +4670,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
         steps.append({"step": "git-pull", "code": 1, "output": "not a git repository"})
     r2 = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "rich", "send2trash", "psutil"], capture_output=True, text=True, shell=False)
     steps.append({"step": "pip-upgrade-deps", "code": r2.returncode, "output": (r2.stdout or r2.stderr).strip()[-500:]})
-    return _emit_update(steps, json_out, quiet)
+    return _emit_update(steps, json_out, quiet, sink)
 
 
 # ---------- Background auto-update (Claude Code style) ----------
@@ -4823,7 +4809,12 @@ def apply_pending_update() -> bool:
         return False
 
 
-def _emit_update(steps: List[dict], json_out: bool, quiet: bool = False) -> str:
+def _emit_update(steps: List[dict], json_out: bool, quiet: bool = False,
+                 sink: Optional[dict] = None) -> str:
+    # Yapılandırılmış sonucu doğrudan çağırana ver (stdout'a dokunmadan).
+    # Sidecar bunu kullanır; böylece eşzamanlı işlemlerin stdout'una karışmaz.
+    if sink is not None:
+        sink["steps"] = steps
     if not quiet:
         if json_out:
             print(json.dumps({"steps": steps}, indent=2))
@@ -4833,12 +4824,18 @@ def _emit_update(steps: List[dict], json_out: bool, quiet: bool = False) -> str:
     return steps[-1]["output"] if steps else ""
 
 
-def cli_remove(dry_run: bool, json_out: bool) -> None:
+def cli_remove(dry_run: bool, json_out: bool, sink: Optional[dict] = None) -> None:
     targets = [WMOLE_DIR]
     results = []
     for t in targets:
         err = delete_path(t, use_trash=False, dry_run=dry_run)
         results.append({"path": str(t), "result": "ok" if err is None else err})
+    if sink is not None:
+        # Yapılandırılmış tüketici (sidecar) var: stdout'a hiçbir şey basma,
+        # çünkü o kanal NDJSON event akışı.
+        sink["dry_run"] = dry_run
+        sink["results"] = results
+        return
     if json_out:
         print(json.dumps({"dry_run": dry_run, "results": results}, indent=2))
     else:

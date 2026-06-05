@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "$lib/i18n";
   let {
     label = "",
     done = 0,
@@ -17,7 +18,7 @@
   <footer class="statusbar">
     <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
     <span class="text">{done}/{total} · {label}</span>
-    {#if onCancel}<button onclick={onCancel}>İptal ✕</button>{/if}
+    {#if onCancel}<button onclick={onCancel}>{$t("İptal ✕")}</button>{/if}
   </footer>
 {/if}
 

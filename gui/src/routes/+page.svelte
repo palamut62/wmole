@@ -19,10 +19,21 @@
   import Settings from "$lib/components/Settings.svelte";
   import Help from "$lib/components/Help.svelte";
   import Toast from "$lib/components/Toast.svelte";
+  import AppStatusBar from "$lib/components/AppStatusBar.svelte";
+  import { t } from "$lib/i18n";
 
   let active = $state("Dashboard");
   let showOnboard = $state(false);
   const scanModes = ["Clean", "Purge", "Installers", "Categories"];
+
+  // routeId → çevrilebilir Türkçe etiket (Sidebar ile aynı), status bar için
+  const sectionLabels: Record<string, string> = {
+    Dashboard: "Gösterge Paneli", Analyze: "Gezgin", Categories: "Kategoriler",
+    Clean: "Temizle", Purge: "Artıklar", Installers: "Kurulumlar",
+    Duplicates: "Yinelenenler", Uninstall: "Kaldır", Optimize: "Optimize",
+    Startup: "Başlangıç", Ports: "Portlar", Processes: "İşlemler",
+    Maintenance: "Bakım", Settings: "Ayarlar", Help: "Yardım",
+  };
 
   onMount(() => {
     applyTheme(get(theme));
@@ -71,6 +82,7 @@
       {/if}
     </main>
   </div>
+  <AppStatusBar section={$t(sectionLabels[active] ?? active)} />
 </div>
 <Toast />
 

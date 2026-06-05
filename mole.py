@@ -3535,19 +3535,33 @@ def _serve_scan(req: dict, emit, cancel) -> None:
     emit({"id": rid, "ev": "started", "total_hint": None})
 
     if mode == "analyze":
-        target = paths[0] if paths else USER
-        min_large = int(load_config().get("large_file_min_mb", 512)) * 1024 * 1024
-        result = analyze_path(target, large_file_min=min_large)
-        for entry in result["entries"]:
+        target = (paths[0] if paths else USER).expanduser()
+        # Stream each child immediately with a capped size computation so that
+        # huge roots (e.g. C:\) stay responsive instead of walking the whole
+        # drive before showing anything.
+        try:
+            children = list(target.iterdir()) if target.is_dir() else [target]
+        except OSError:
+            children = []
+        total = len(children)
+        total_bytes = 0
+        for idx, child in enumerate(children):
             if cancel.is_set():
                 emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
                 return
-            emit({"id": rid, "ev": "item", "path": str(target / entry["name"]),
-                  "name": entry["name"], "size": entry["size"],
-                  "kind": "dir" if entry["is_dir"] else "file", "selected": False})
+            try:
+                is_dir = child.is_dir()
+                size = quick_size(child)
+            except OSError:
+                continue
+            total_bytes += size
+            emit({"id": rid, "ev": "item", "path": str(child),
+                  "name": child.name, "size": size,
+                  "kind": "dir" if is_dir else "file", "selected": False})
+            emit({"id": rid, "ev": "progress", "done": idx + 1,
+                  "total": total, "label": child.name})
         emit({"id": rid, "ev": "done", "ok": True,
-              "summary": {"count": len(result["entries"]),
-                          "bytes": result["total_size"]}})
+              "summary": {"count": total, "bytes": total_bytes}})
         return
 
     if mode == "large":

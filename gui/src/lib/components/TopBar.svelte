@@ -1,7 +1,7 @@
 <script lang="ts">
   import { connected } from "$lib/sidecar";
   import { theme, toggleTheme } from "$lib/theme";
-  import { lang, toggleLang } from "$lib/i18n";
+  import { lang, toggleLang, t } from "$lib/i18n";
 </script>
 
 <header class="topbar">
@@ -10,7 +10,7 @@
   <button class="chip" onclick={toggleLang} title="Dil / Language">{$lang.toUpperCase()}</button>
   <button class="chip" onclick={toggleTheme} title="Tema">{$theme === "dark" ? "🌙" : "☀"}</button>
   <span class="status" class:on={$connected}>
-    {$connected ? "● sidecar bağlı" : "○ bağlanıyor…"}
+    {$connected ? "● " + $t("sidecar bağlı") : "○ " + $t("bağlanıyor…")}
   </span>
 </header>
 

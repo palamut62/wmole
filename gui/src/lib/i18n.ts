@@ -31,6 +31,7 @@ const EN: Record<string, string> = {
   Yardım: "Help",
   // Ortak butonlar/etiketler
   Tara: "Scan",
+  "Analize Başla": "Start Analysis",
   "Taranıyor…": "Scanning…",
   "Tümünü Seç": "Select All",
   Hiçbiri: "None",

@@ -34,6 +34,8 @@ const EN: Record<string, string> = {
   "Analize Başla": "Start Analysis",
   "sidecar bağlı": "sidecar connected",
   "bağlanıyor…": "connecting…",
+  "Analiz ediliyor": "Analyzing",
+  "Hazır": "Ready",
   "Taranıyor…": "Scanning…",
   "Tümünü Seç": "Select All",
   Hiçbiri: "None",

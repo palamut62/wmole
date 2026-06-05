@@ -19,6 +19,8 @@
   import Settings from "$lib/components/Settings.svelte";
   import Help from "$lib/components/Help.svelte";
   import Toast from "$lib/components/Toast.svelte";
+  import AppStatusBar from "$lib/components/AppStatusBar.svelte";
+  import { t } from "$lib/i18n";
 
   let active = $state("Dashboard");
   let showOnboard = $state(false);
@@ -71,6 +73,7 @@
       {/if}
     </main>
   </div>
+  <AppStatusBar section={$t(active)} />
 </div>
 <Toast />
 

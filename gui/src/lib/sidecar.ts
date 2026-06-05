@@ -9,6 +9,26 @@ let counter = 0;
 
 export const connected = writable(false);
 
+/** Uygulama geneli canlı durum: aktif istek sayısı + son ilerleme bilgisi. */
+export const activity = writable<{
+  busy: boolean;
+  op: string;
+  label: string;
+  done: number;
+  total: number;
+}>({ busy: false, op: "", label: "", done: 0, total: 0 });
+
+let inflight = 0;
+
+function startActivity(op: string) {
+  inflight += 1;
+  activity.update((a) => ({ ...a, busy: true, op }));
+}
+function endActivity() {
+  inflight = Math.max(0, inflight - 1);
+  if (inflight === 0) activity.set({ busy: false, op: "", label: "", done: 0, total: 0 });
+}
+
 listen<string>("sidecar-event", (msg) => {
   let e: SidecarEvent;
   try {
@@ -19,6 +39,15 @@ listen<string>("sidecar-event", (msg) => {
   if (e.ev === "ready") {
     connected.set(true);
     return;
+  }
+  if (e.ev === "progress") {
+    activity.update((a) => ({
+      ...a,
+      busy: true,
+      label: String((e as any).label ?? ""),
+      done: Number((e as any).done ?? 0),
+      total: Number((e as any).total ?? 0),
+    }));
   }
   if (e.id && handlers.has(e.id)) {
     handlers.get(e.id)!(e);
@@ -38,10 +67,14 @@ export function request(
 ): Promise<SidecarEvent> {
   const id = nextId(req.op);
   const full: Request = { ...req, id };
+  startActivity(req.op);
   return new Promise((resolve) => {
     handlers.set(id, (e) => {
       onEvent?.(e);
-      if (e.ev === "done") resolve(e);
+      if (e.ev === "done") {
+        endActivity();
+        resolve(e);
+      }
     });
     invoke("send_request", { line: JSON.stringify(full) });
   });

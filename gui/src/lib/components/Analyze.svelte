@@ -24,6 +24,7 @@
   let progress = $state({ done: 0, total: 0, label: "" });
   let drives = $state<any[]>([]);
   let showDrives = $state(false);
+  let selectedDrive = $state<string | null>(null);
   let confirmOpen = $state(false);
   let treemap = $state(false);
 
@@ -155,11 +156,21 @@
   {#if showDrives}
     <div class="drives">
       {#each drives as d}
-        <button class="drive" onclick={() => scan(d.mountpoint)}>
+        <button
+          class="drive"
+          class:selected={selectedDrive === d.mountpoint}
+          onclick={() => { selectedDrive = d.mountpoint; path = d.mountpoint; }}
+          ondblclick={() => scan(d.mountpoint)}
+        >
           <strong>{d.device}</strong>
           <span class="muted">{fmt(d.free)} {$t("boş")} / {fmt(d.total)} ({d.percent}%)</span>
         </button>
       {/each}
+      <button
+        class="start"
+        onclick={() => selectedDrive && scan(selectedDrive)}
+        disabled={!selectedDrive || scanning}
+      >▶ {$t("Analize Başla")}</button>
     </div>
   {/if}
 
@@ -233,6 +244,8 @@
   .count { color: var(--muted); font-size: 12px; }
   .drives { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
   .drive { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; background: var(--panel); border: 1px solid var(--border); padding: 8px 14px; }
+  .drive.selected { border-color: #2ea043; box-shadow: 0 0 0 1px #2ea043 inset; }
+  .start { align-self: center; background: #2ea043; color: white; font-weight: bold; }
   .muted { color: var(--faint); font-size: 11px; }
   .list { flex: 1; min-height: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
   .entry { display: flex; gap: 10px; align-items: center; padding: 0 10px; width: 100%; }

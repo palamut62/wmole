@@ -26,6 +26,15 @@
   let showOnboard = $state(false);
   const scanModes = ["Clean", "Purge", "Installers", "Categories"];
 
+  // routeId → çevrilebilir Türkçe etiket (Sidebar ile aynı), status bar için
+  const sectionLabels: Record<string, string> = {
+    Dashboard: "Gösterge Paneli", Analyze: "Gezgin", Categories: "Kategoriler",
+    Clean: "Temizle", Purge: "Artıklar", Installers: "Kurulumlar",
+    Duplicates: "Yinelenenler", Uninstall: "Kaldır", Optimize: "Optimize",
+    Startup: "Başlangıç", Ports: "Portlar", Processes: "İşlemler",
+    Maintenance: "Bakım", Settings: "Ayarlar", Help: "Yardım",
+  };
+
   onMount(() => {
     applyTheme(get(theme));
     if (typeof localStorage !== "undefined" && !localStorage.getItem("wmole-onboarded")) {
@@ -73,7 +82,7 @@
       {/if}
     </main>
   </div>
-  <AppStatusBar section={$t(active)} />
+  <AppStatusBar section={$t(sectionLabels[active] ?? active)} />
 </div>
 <Toast />
 

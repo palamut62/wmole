@@ -8,5 +8,20 @@ release/
 
 .vercel
 release-notes-*.md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.codex/
 .claude/
+.gemini/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.aider*
+.opencode/
+opencode.json
+.github/copilot-instructions.md
+.specstory/
+.continue/
 docs/superpowers/

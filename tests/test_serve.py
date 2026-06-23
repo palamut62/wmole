@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import pathlib
+from unittest import mock
 
 import mole
 
@@ -109,6 +110,23 @@ class ServeParityTest(unittest.TestCase):
         events, err = _run_serve([{"id": "pl", "op": "ports_list"}])
         ids = [e for e in events if e["id"] == "pl"]
         self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+    def test_ports_list_path_includes_bind_address(self):
+        rows = [
+            {"proto": "TCP", "ip": "::", "port": 3000, "pid": 123, "process": "node.exe", "hint": "Node/React"},
+            {"proto": "TCP", "ip": "0.0.0.0", "port": 3000, "pid": 123, "process": "node.exe", "hint": "Node/React"},
+        ]
+        events = []
+
+        with mock.patch.object(mole, "list_dev_ports", return_value=rows):
+            mole._serve_ports_list({"id": "pl"}, events.append, None)
+
+        items = [e for e in events if e["ev"] == "item"]
+        paths = [e["path"] for e in items]
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertEqual(paths, ["TCP|::|3000|123", "TCP|0.0.0.0|3000|123"])
+        self.assertEqual(items[0]["ip"], "::")
+        self.assertEqual(items[1]["ip"], "0.0.0.0")
 
     def test_uninstall_list(self):
         events, err = _run_serve([{"id": "u1", "op": "uninstall_list", "limit": 5}])

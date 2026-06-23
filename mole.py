@@ -3725,11 +3725,12 @@ def _serve_ports_list(req: dict, emit, cancel) -> None:
     emit({"id": rid, "ev": "started", "total_hint": None})
     rows = list_dev_ports(include_all=bool(req.get("all_binds")))
     for r in rows:
+        bind_ip = r.get("ip", "")
         emit({"id": rid, "ev": "item",
-              "path": f"{r['proto']}:{r['port']}:{r.get('pid') or ''}",
+              "path": f"{r['proto']}|{bind_ip}|{r['port']}|{r.get('pid') or ''}",
               "name": f"{r['proto']}/{r['port']}", "size": 0, "kind": "port",
               "port": r["port"], "pid": r.get("pid"), "proto": r["proto"],
-              "process": r.get("process", ""), "ip": r.get("ip", ""),
+              "process": r.get("process", ""), "ip": bind_ip,
               "hint": r.get("hint", ""), "selected": False})
     emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(rows)}})
 

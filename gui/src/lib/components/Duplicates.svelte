@@ -40,6 +40,25 @@
 
   function toggle(it: Dup) { it.selected = !it.selected; items = [...items]; }
 
+  /** Her gruptan ilk (en büyük) kopyayı koru, fazlalıkları seç. */
+  function selectExtras() {
+    const seen = new Set<string>();
+    for (const it of items) {
+      if (seen.has(it.group)) {
+        it.selected = true;
+      } else {
+        seen.add(it.group);
+        it.selected = false;
+      }
+    }
+    items = [...items];
+  }
+
+  function clearSelection() {
+    for (const it of items) it.selected = false;
+    items = [...items];
+  }
+
   async function del(permanent: boolean) {
     confirmOpen = false;
     const targets = selected.map((i) => i.path);
@@ -59,6 +78,8 @@
     <h2>{$t("Yinelenen Dosyalar")}</h2>
     <input class="pathbox" bind:value={path} placeholder="C:\\Users\\…" onkeydown={(e) => e.key === "Enter" && scan()} />
     <button onclick={scan} disabled={scanning}>{scanning ? $t("Taranıyor…") : $t("Tara")}</button>
+    <button onclick={selectExtras} disabled={!items.length}>{$t("Fazlalıkları Seç")}</button>
+    <button onclick={clearSelection} disabled={!selected.length}>{$t("Seçimi Temizle")}</button>
     <button class="danger" onclick={() => selected.length && (confirmOpen = true)} disabled={!selected.length}>{$t("Sil…")} ({selected.length})</button>
     <span class="count">{items.length} {$t("kopya")} · {fmt(selectedBytes)} {$t("seçili")}</span>
   </div>

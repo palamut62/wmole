@@ -78,6 +78,7 @@
       <label class="entry">
         <input type="checkbox" checked={p.selected} onchange={() => toggle(p)} disabled={!p.pid} />
         <span class="port">{p.proto}/{p.port}</span>
+        <span class="bind">{p.ip || "-"}</span>
         <span class="pid">pid {p.pid ?? "-"}</span>
         <span class="proc">{p.process || "-"}</span>
         <span class="hint">{p.hint}</span>
@@ -118,6 +119,7 @@
   .entry { display: flex; gap: 12px; align-items: center; padding: 6px 10px; border-radius: 4px; }
   .entry:hover { background: var(--border); }
   .port { color: #58d6a0; min-width: 90px; }
+  .bind { color: var(--muted); min-width: 110px; }
   .pid { color: var(--muted); min-width: 90px; }
   .proc { color: var(--fg); min-width: 160px; }
   .hint { color: var(--faint); font-size: 12px; }

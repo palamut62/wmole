@@ -154,6 +154,8 @@ const EN: Record<string, string> = {
   "~/.wmole'u Sil": "Delete ~/.wmole",
   // Duplicates
   "Yinelenen Dosyalar": "Duplicate Files",
+  "Fazlalıkları Seç": "Select Extras",
+  "Seçimi Temizle": "Clear Selection",
   "≥1MB dosyalar boyut+MD5 ile karşılaştırılır. Aynı renkli grup = aynı içerik. Her gruptan birini saklamanız önerilir.":
     "Files ≥1MB are compared by size+MD5. Same-colored group = identical content. Keeping one per group is recommended.",
   // Toast / bildirim mesajları

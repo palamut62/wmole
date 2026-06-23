@@ -70,7 +70,7 @@
 </div>
 
 <GenericConfirm open={confirmOpen} danger title="Süreç Kapatma"
-  message={`${selected.length} süreç sonlandırılacak. Kaydedilmemiş veriler kaybolabilir. Devam?`}
+  message={`${selected.length} ${tr("süreç sonlandırılacak (kill). Kaydedilmemiş veriler kaybolabilir. Devam?")}`}
   confirmLabel="Kapat" onConfirm={kill} onCancel={() => (confirmOpen = false)} />
 
 <style>

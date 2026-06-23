@@ -7,6 +7,8 @@ use tauri::{
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+mod updater;
+
 struct Sidecar(Mutex<Option<CommandChild>>);
 
 #[tauri::command]
@@ -87,7 +89,13 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![send_request, relaunch_admin])
+        .invoke_handler(tauri::generate_handler![
+            send_request,
+            relaunch_admin,
+            updater::check_update,
+            updater::download_update,
+            updater::install_update
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

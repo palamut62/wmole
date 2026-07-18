@@ -7,7 +7,7 @@
   import { toast } from "$lib/toast";
   import { t, tr } from "$lib/i18n";
 
-  interface Proc { path: string; name: string; size: number; pid: number; cpu: number; selected: boolean; }
+  interface Proc { path: string; name: string; size: number; pid: number; cpu: number; protected?: boolean; selected: boolean; }
   let procs = $state<Proc[]>([]);
   let filter = $state("");
   let loading = $state(false);
@@ -32,7 +32,7 @@
   }
   onMount(load);
 
-  function toggle(p: Proc) { p.selected = !p.selected; procs = [...procs]; }
+  function toggle(p: Proc) { if (!p.protected) p.selected = !p.selected; procs = [...procs]; }
 
   async function kill() {
     confirmOpen = false;
@@ -58,11 +58,12 @@
     <VirtualList items={shown} rowHeight={26}>
       {#snippet row(item)}
         <label class="entry">
-          <input type="checkbox" checked={item.selected} onchange={() => toggle(item)} />
+          <input type="checkbox" checked={item.selected} disabled={item.protected} onchange={() => toggle(item)} />
           <span class="mem">{fmt(item.size)}</span>
           <span class="cpu">{item.cpu?.toFixed(0) ?? 0}%</span>
           <span class="pid">{item.pid}</span>
           <span class="name">{item.name}</span>
+          {#if item.protected}<span class="guard">KORUMALI</span>{/if}
         </label>
       {/snippet}
     </VirtualList>
@@ -87,4 +88,5 @@
   .cpu { color: #d29922; min-width: 45px; text-align: right; }
   .pid { color: var(--faint); min-width: 60px; }
   .name { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .guard { color: #58d6a0; font-size: 10px; font-weight: bold; }
 </style>

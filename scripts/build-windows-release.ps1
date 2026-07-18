@@ -11,15 +11,29 @@ Set-Location $repoRoot
 #    Bu exe hem standalone CLI asset'i hem de Tauri sidecar kaynağı.
 # ─────────────────────────────────────────────────────────────
 Write-Host "==> Building sidecar (mole.py) with PyInstaller..." -ForegroundColor Cyan
+$sidecarOutput = Join-Path $repoRoot "dist/wmole.exe"
+Remove-Item -LiteralPath $sidecarOutput -Force -ErrorAction SilentlyContinue
 py -3 -m PyInstaller `
   --noconfirm `
   --clean `
   --onefile `
   --name wmole `
   --icon assets/icons/desktop/wmole.ico `
+  --exclude-module IPython `
+  --exclude-module matplotlib `
+  --exclude-module numpy `
+  --exclude-module PIL `
+  --exclude-module PyQt5 `
+  --exclude-module PyQt6 `
+  --exclude-module PySide6 `
+  --exclude-module kivy `
+  --exclude-module kivymd `
   mole.py
 
-if (-not (Test-Path "dist/wmole.exe")) {
+if ($LASTEXITCODE -ne 0) {
+  throw "PyInstaller failed ($LASTEXITCODE)"
+}
+if (-not (Test-Path -LiteralPath $sidecarOutput)) {
   throw "dist/wmole.exe was not created."
 }
 
@@ -29,7 +43,7 @@ if (-not (Test-Path "dist/wmole.exe")) {
 $sidecarDir = Join-Path $repoRoot "gui/src-tauri/binaries"
 New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
 $sidecar = Join-Path $sidecarDir "wmole-x86_64-pc-windows-msvc.exe"
-Copy-Item "dist/wmole.exe" $sidecar -Force
+Copy-Item -LiteralPath $sidecarOutput -Destination $sidecar -Force
 Write-Host "    sidecar -> $sidecar"
 
 # ─────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ const EN: Record<string, string> = {
   Bakım: "Maintenance",
   Ayarlar: "Settings",
   Yardım: "Help",
+  "Güvenlik Merkezi": "Security Center",
   // Ortak butonlar/etiketler
   Tara: "Scan",
   "Analize Başla": "Start Analysis",

@@ -64,7 +64,7 @@
     confirmOpen = false;
     const app = selectedApp;
     if (!app) return;
-    await request({ op: "uninstall_run", uninstall: app.uninstall });
+    await request({ op: "uninstall_run", uninstall: app.uninstall, uninstall_key: app.path });
     toast(`${app.name} ${tr("kaldırıcısı başlatıldı")}`, "info");
     // kalan dosyaları tara
     leftovers = [];

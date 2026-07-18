@@ -25,7 +25,8 @@ fn send_request(state: State<Sidecar>, line: String) -> Result<(), String> {
 #[tauri::command]
 fn relaunch_admin(app: tauri::AppHandle) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_str = exe.to_string_lossy().to_string();
+    // PowerShell single-quoted strings escape a literal quote by doubling it.
+    let exe_str = exe.to_string_lossy().replace('\'', "''");
     std::process::Command::new("powershell")
         .args([
             "-WindowStyle",

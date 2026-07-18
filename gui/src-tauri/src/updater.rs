@@ -6,6 +6,15 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const GH_REPO: &str = "palamut62/wmole";
 const UA: &str = "wmole-updater";
+const RELEASE_URL_PREFIX: &str = "https://github.com/palamut62/wmole/releases/download/";
+
+fn validate_release_url(url: &str, expected_suffix: &str) -> Result<(), String> {
+    if url.starts_with(RELEASE_URL_PREFIX) && url.ends_with(expected_suffix) {
+        Ok(())
+    } else {
+        Err("invalid-update-url".into())
+    }
+}
 
 #[derive(Deserialize)]
 struct GhAsset {
@@ -106,6 +115,8 @@ pub async fn download_update(
     sha256_url: String,
     total: u64,
 ) -> Result<String, String> {
+    validate_release_url(&url, "-setup.exe")?;
+    validate_release_url(&sha256_url, ".sha256")?;
     let dir = app.path().temp_dir().map_err(|e| format!("disk: {e}"))?;
     let target = dir.join("wmole-update-setup.exe");
 
@@ -151,6 +162,11 @@ pub async fn download_update(
     file.flush().ok();
     drop(file);
 
+    if total > 0 && downloaded != total {
+        let _ = std::fs::remove_file(&target);
+        return Err(format!("size-mismatch:{downloaded}:{total}"));
+    }
+
     // SHA-256 doğrulama (bozuk/eksik indirme tespiti)
     let got = format!("{:x}", hasher.finalize());
     let expected_raw = client
@@ -182,10 +198,20 @@ pub async fn download_update(
 /// sonrası uygulamayı yeniden başlatır.
 #[tauri::command]
 pub fn install_update(app: AppHandle, setup_path: String) -> Result<(), String> {
-    if !std::path::Path::new(&setup_path).exists() {
+    let expected = app
+        .path()
+        .temp_dir()
+        .map_err(|e| format!("disk: {e}"))?
+        .join("wmole-update-setup.exe");
+    let requested = std::fs::canonicalize(&setup_path).map_err(|_| "setup-missing")?;
+    let expected = std::fs::canonicalize(expected).map_err(|_| "setup-missing")?;
+    if requested != expected {
+        return Err("invalid-setup-path".into());
+    }
+    if !requested.is_file() {
         return Err("setup-missing".into());
     }
-    std::process::Command::new(&setup_path)
+    std::process::Command::new(&requested)
         .arg("/S")
         .spawn()
         .map_err(|e| format!("spawn: {e}"))?; // kurulum başlatılamadı

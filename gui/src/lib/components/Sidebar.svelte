@@ -26,6 +26,7 @@
         ["Ports", "🔌", "Portlar"],
         ["Processes", "▤", "İşlemler"],
         ["Maintenance", "🛠", "Bakım"],
+        ["Security", "🛡", "Güvenlik Merkezi"],
       ],
     },
     { label: "Diğer", items: [["Settings", "⚙", "Ayarlar"], ["Help", "?", "Yardım"]] },

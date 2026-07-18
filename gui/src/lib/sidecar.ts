@@ -68,7 +68,7 @@ export function request(
   const id = nextId(req.op);
   const full: Request = { ...req, id };
   startActivity(req.op);
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     handlers.set(id, (e) => {
       onEvent?.(e);
       if (e.ev === "done") {
@@ -76,11 +76,15 @@ export function request(
         resolve(e);
       }
     });
-    invoke("send_request", { line: JSON.stringify(full) });
+    void invoke("send_request", { line: JSON.stringify(full) }).catch((error) => {
+      handlers.delete(id);
+      endActivity();
+      reject(error);
+    });
   });
 }
 
 /** Çalışan bir isteği iptal et. */
 export function cancel(id: string) {
-  invoke("send_request", { line: JSON.stringify({ id, op: "cancel" }) });
+  return invoke("send_request", { line: JSON.stringify({ id, op: "cancel" }) });
 }

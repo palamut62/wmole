@@ -16,6 +16,7 @@
   import Startup from "$lib/components/Startup.svelte";
   import Duplicates from "$lib/components/Duplicates.svelte";
   import Maintenance from "$lib/components/Maintenance.svelte";
+  import SecurityCenter from "$lib/components/SecurityCenter.svelte";
   import Settings from "$lib/components/Settings.svelte";
   import Help from "$lib/components/Help.svelte";
   import Toast from "$lib/components/Toast.svelte";
@@ -34,7 +35,7 @@
     Clean: "Temizle", Purge: "Artıklar", Installers: "Kurulumlar",
     Duplicates: "Yinelenenler", Uninstall: "Kaldır", Optimize: "Optimize",
     Startup: "Başlangıç", Ports: "Portlar", Processes: "İşlemler",
-    Maintenance: "Bakım", Settings: "Ayarlar", Help: "Yardım",
+    Maintenance: "Bakım", Security: "Güvenlik Merkezi", Settings: "Ayarlar", Help: "Yardım",
   };
 
   onMount(() => {
@@ -81,6 +82,8 @@
         <Duplicates />
       {:else if active === "Maintenance"}
         <Maintenance />
+      {:else if active === "Security"}
+        <SecurityCenter />
       {:else if active === "Settings"}
         <Settings />
       {:else if active === "Help"}

@@ -37,7 +37,8 @@ class WmoleBehaviorTests(unittest.TestCase):
             calls.append(arg)
 
         paths = [Path(r"C:\a\cache"), Path(r"C:\b\tmp")]
-        with mock.patch.object(mole, "send2trash", fake_send2trash):
+        with mock.patch.object(mole, "send2trash", fake_send2trash), \
+             mock.patch.object(mole, "load_config", return_value={"quarantine_enabled": False}):
             res = mole.trash_paths_batch(paths, sizes={str(paths[0]): 100, str(paths[1]): 5})
 
         # One batched call carrying both paths as a list.
@@ -57,7 +58,8 @@ class WmoleBehaviorTests(unittest.TestCase):
                 raise OSError("nope")
 
         paths = [Path(r"C:\good"), Path(r"C:\bad")]
-        with mock.patch.object(mole, "send2trash", fake_send2trash):
+        with mock.patch.object(mole, "send2trash", fake_send2trash), \
+             mock.patch.object(mole, "load_config", return_value={"quarantine_enabled": False}):
             res = mole.trash_paths_batch(paths)
 
         self.assertIsNone(res[str(paths[0])])
@@ -518,7 +520,8 @@ class WmoleBehaviorTests(unittest.TestCase):
 
     def test_run_optimize_windows_update_dry_run(self):
         action = next(a for a in mole.OPTIMIZE_ACTIONS if a.key == "windows-update")
-        res = mole.run_optimize(action, dry_run=True)
+        ok, res = mole.run_optimize(action, dry_run=True)
+        self.assertTrue(ok)
         self.assertIn("dry-run", res)
 
     def test_dir_size_scandir_counts_nested_and_respects_budget(self):
@@ -617,10 +620,85 @@ class WmoleBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "keep.txt"
             f.write_bytes(b"data")
-            with mock.patch.object(mole, "send2trash", None):
+            with mock.patch.object(mole, "send2trash", None), \
+                 mock.patch.object(mole, "load_config", return_value={"quarantine_enabled": False}):
                 err = mole.delete_path(f, use_trash=True, dry_run=False)
             self.assertIsNotNone(err)
             self.assertTrue(f.exists())  # must NOT be permanently deleted
+
+    def test_quarantine_roundtrip_restores_original_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "project-cache"
+            source.mkdir()
+            (source / "data.txt").write_text("safe", encoding="utf-8")
+            vault = root / "vault"
+            with mock.patch.object(mole, "QUARANTINE_DIR", vault), \
+                 mock.patch.object(mole, "QUARANTINE_INDEX", vault / "index.json"), \
+                 mock.patch.object(mole, "git_delete_risk", return_value=""), \
+                 mock.patch.object(mole, "log_operation"):
+                self.assertIsNone(mole.quarantine_path(source, size=4))
+                self.assertFalse(source.exists())
+                entry = mole._quarantine_entries()[0]
+                self.assertIsNone(mole.restore_quarantine(entry["id"]))
+            self.assertEqual((source / "data.txt").read_text(encoding="utf-8"), "safe")
+
+    def test_git_delete_risk_blocks_dirty_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".git").mkdir()
+            target = root / "src"
+            target.mkdir()
+            completed = mock.Mock(returncode=0, stdout=" M src/app.py\n")
+            with mock.patch.object(mole.subprocess, "run", return_value=completed):
+                self.assertIn("modified", mole.git_delete_risk(target))
+
+    def test_secret_scan_redacts_detected_value(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            value = "ghp_1234567890abcdefghijklmnop"
+            (root / ".env").write_text(f"TOKEN={value}\n", encoding="utf-8")
+            with mock.patch.object(mole, "log_security_event"):
+                result = mole.scan_secrets(root)
+            self.assertEqual(len(result["findings"]), 1)
+            self.assertNotIn(value, result["findings"][0]["preview"])
+
+    def test_security_log_detects_tampering(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = root / "security.jsonl"
+            key = root / "security.key"
+            with mock.patch.object(mole, "SECURITY_LOG_FILE", log), \
+                 mock.patch.object(mole, "SECURITY_KEY_FILE", key), \
+                 mock.patch.object(mole, "WMOLE_DIR", root):
+                mole.log_security_event("test", {"ok": True})
+                rows, valid = mole.read_security_log()
+                self.assertTrue(valid)
+                self.assertEqual(rows[0]["event"], "test")
+                log.write_text(log.read_text(encoding="utf-8").replace("test", "evil"), encoding="utf-8")
+                _, valid = mole.read_security_log()
+                self.assertFalse(valid)
+
+    def test_supply_chain_audit_builds_sbom_and_reports_tool_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text('{"name":"demo"}', encoding="utf-8")
+            (root / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
+            with mock.patch.object(mole, "_run_audit", return_value={
+                "tool": "npm", "status": "ok", "code": 0, "output": "{}",
+            }), mock.patch.object(mole, "log_security_event"):
+                result = mole.supply_chain_audit(root)
+            self.assertEqual(len(result["sbom"]), 2)
+            self.assertEqual(result["audits"][0]["status"], "ok")
+
+    def test_process_protection_blocks_configured_developer_process(self):
+        fake_proc = mock.Mock()
+        fake_proc.name.return_value = "Code.exe"
+        with mock.patch.object(mole.psutil, "Process", return_value=fake_proc), \
+             mock.patch.object(mole, "load_config", return_value={
+                 "protected_processes": ["code.exe"],
+             }):
+            self.assertIn("protected developer process", mole.process_protection_reason(42))
 
     def test_is_leftover_match_is_strict(self):
         tokens = mole.normalize_app_tokens("GitHub Desktop")
@@ -642,7 +720,7 @@ class WmoleBehaviorTests(unittest.TestCase):
     def test_cli_optimize_json_skips_high_risk_without_yes(self):
         buf = io.StringIO()
         # Mock run_optimize so no real system commands execute during the test.
-        with mock.patch.object(mole, "run_optimize", return_value="ran"):
+        with mock.patch.object(mole, "run_optimize", return_value=(True, "ran")):
             with contextlib.redirect_stdout(buf):
                 mole.cli_optimize(dry_run=False, json_out=True, yes=False)
         data = json.loads(buf.getvalue())

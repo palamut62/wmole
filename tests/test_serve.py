@@ -197,6 +197,27 @@ class ServeFeatureTest(unittest.TestCase):
         ids = [e for e in events if e["id"] == "pr"]
         self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
 
+    def test_ports_kill_invalid_pid_reports_error_and_completes(self):
+        events, err = _run_serve([
+            {"id": "pk", "op": "ports_kill", "pids": ["not-a-pid"], "dry_run": True},
+        ])
+        ids = [e for e in events if e["id"] == "pk"]
+        item = [e for e in ids if e["ev"] == "item_result"]
+        self.assertTrue(item, msg=err)
+        self.assertFalse(item[0]["ok"])
+        self.assertIn("invalid pid", item[0]["message"])
+        self.assertTrue(any(e["ev"] == "done" and e["ok"] for e in ids), msg=err)
+
+    def test_uninstall_run_rejects_arbitrary_command(self):
+        events, err = _run_serve([
+            {"id": "ur", "op": "uninstall_run",
+             "uninstall": "cmd /c echo pwned > NUL"},
+        ])
+        ids = [e for e in events if e["id"] == "ur"]
+        self.assertTrue(any(e["ev"] == "error" and e["code"] == "no_uninstall_string"
+                            for e in ids), msg=err)
+        self.assertTrue(any(e["ev"] == "done" and not e["ok"] for e in ids), msg=err)
+
     def test_settings_set_roundtrip(self):
         events, err = _run_serve([
             {"id": "w", "op": "settings_set", "whitelist": ["C:\\test-wl-xyz"]},

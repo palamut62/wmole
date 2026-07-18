@@ -26,7 +26,11 @@ export type Op =
   | "startup_list"
   | "startup_disable"
   | "processes_list"
-  | "duplicates";
+  | "duplicates"
+  | "security_overview"
+  | "quarantine_restore"
+  | "secret_scan"
+  | "supply_audit";
 
 export interface Request {
   id: string;
@@ -41,6 +45,7 @@ export interface Request {
   limit?: number;
   app?: unknown;
   uninstall?: string;
+  uninstall_key?: string;
   key?: string;
   keys?: string[];
   pid?: number;
@@ -56,6 +61,7 @@ export interface Request {
   name?: string;
   location?: string;
   min_size?: number;
+  entry_id?: string;
 }
 
 export interface SidecarEvent {

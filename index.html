@@ -488,7 +488,7 @@
 
         <!-- Releases injected dynamically from GitHub API; static fallback below -->
 
-        <!-- Release 0.5.0 -->
+        <!-- Release 0.7.0 -->
         <article class="rounded-xl border bg-card overflow-hidden">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b px-4 sm:px-6 py-4 bg-muted/30">
             <div class="flex items-center gap-3">
@@ -496,39 +496,39 @@
               <div>
                 <div class="flex items-center gap-2 flex-wrap">
                   <i data-lucide="tag" class="w-3.5 h-3.5 text-muted-foreground"></i>
-                  <span class="font-semibold text-foreground">v0.5.0</span>
+                  <span class="font-semibold text-foreground">v0.7.0</span>
                   <span class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
                     Latest Release
                   </span>
                 </div>
                 <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
                   <i data-lucide="calendar" class="w-3 h-3"></i>
-                  June 4, 2026
+                  July 18, 2026
                 </div>
               </div>
             </div>
             <a
-              href="https://github.com/palamut62/wmole/releases/download/v0.5.0/wmole-0.5.0-setup.exe"
+              href="https://github.com/palamut62/wmole/releases/download/v0.7.0/wmole-0.7.0-setup.exe"
               class="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity self-start sm:self-auto"
             >
               <i data-lucide="download" class="w-3.5 h-3.5"></i>
-              Download Setup v0.5.0
+              Download Setup v0.7.0
             </a>
           </div>
 
           <div class="px-4 sm:px-6 py-4 sm:py-5 space-y-4 sm:space-y-5">
-            <h2 class="text-lg font-semibold text-foreground">Tauri GUI and Python sidecar release</h2>
+            <h2 class="text-lg font-semibold text-foreground">Developer Security Center</h2>
 
             <div>
               <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-1.5">Highlights</h3>
               <ul class="space-y-1 text-sm text-muted-foreground">
                 <li class="flex items-start gap-2">
                   <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
-                  <strong>Modern desktop GUI</strong>: A Tauri and Svelte shell now wraps the Windows maintenance toolkit.
+                  <strong>Git-aware protection</strong>: Deletion is blocked when a target contains modified or untracked project files.
                 </li>
                 <li class="flex items-start gap-2">
                   <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
-                  <strong>Bundled Python sidecar</strong>: The existing wmole CLI/TUI engine ships with the desktop app for local operations.
+                  <strong>Recovery vault</strong>: Safe deletions move into a 30-day quarantine with one-click restoration.
                 </li>
               </ul>
             </div>
@@ -536,10 +536,10 @@
             <div>
               <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Features</h3>
               <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
-                <li><strong>Desktop workflow:</strong> Scan, cleanup, uninstall, ports, processes, startup, optimize, settings, and help views are available from the GUI.</li>
-                <li><strong>Maintenance controls:</strong> Update checks and wmole state cleanup are exposed from the app.</li>
-                <li><strong>Localized interface:</strong> Turkish and English strings are wired through the GUI.</li>
-                <li><strong>Safety model:</strong> Destructive actions continue to use confirmations and local operation logging.</li>
+                <li><strong>Secret scanning:</strong> Detects common API keys, tokens, and private keys while masking sensitive values.</li>
+                <li><strong>Supply-chain auditing:</strong> Runs npm, Cargo, and Python checks and builds a lockfile-based SBOM.</li>
+                <li><strong>Process protection:</strong> Prevents accidental termination of IDE, Docker, and database processes.</li>
+                <li><strong>Tamper-evident history:</strong> Security events are protected by an HMAC verification chain.</li>
               </ul>
             </div>
 
@@ -547,8 +547,8 @@
               <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Technical Specs</h3>
               <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
                 <li>Compatible with Windows 10/11 64-bit platforms.</li>
-                <li>Python 3.9+ runtime dependencies bundle via PyInstaller executable wrapper.</li>
-                <li>Safety model unchanged: deletions go to the Recycle Bin and protected paths are blocked.</li>
+                <li>The optimized Python sidecar is bundled with the signed Tauri desktop package.</li>
+                <li>Update downloads require the official GitHub Release URL, expected size, and SHA-256 checksum.</li>
               </ul>
             </div>
           </div>

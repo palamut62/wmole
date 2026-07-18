@@ -168,7 +168,7 @@
   .paths li { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); }
   .row { display: flex; gap: 8px; align-items: center; }
   input, select { background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding: 6px 10px; border-radius: 4px; font-family: monospace; }
-  input[type="text"], .row input:not([type]) { flex: 1; }
+  .row input:not([type]) { flex: 1; }
   button { background: var(--btn); color: var(--fg); border: none; padding: 7px 14px; border-radius: 5px; cursor: pointer; font-family: monospace; }
   button.primary { background: #2ea043; color: white; }
   button.danger { background: #e5534b; color: white; }

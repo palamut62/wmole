@@ -488,6 +488,73 @@
 
         <!-- Releases injected dynamically from GitHub API; static fallback below -->
 
+        <!-- Release 0.8.0 -->
+        <article class="rounded-xl border bg-card overflow-hidden">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b px-4 sm:px-6 py-4 bg-muted/30">
+            <div class="flex items-center gap-3">
+              <img src="assets/icons/desktop/hicolor/512x512/apps/wmole.png" alt="" class="w-8 h-8 rounded-lg shrink-0" />
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <i data-lucide="tag" class="w-3.5 h-3.5 text-muted-foreground"></i>
+                  <span class="font-semibold text-foreground">v0.8.0</span>
+                  <span class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
+                    Latest Release
+                  </span>
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
+                  <i data-lucide="calendar" class="w-3 h-3"></i>
+                  July 24, 2026
+                </div>
+              </div>
+            </div>
+            <a
+              href="https://github.com/palamut62/wmole/releases/download/v0.8.0/wmole-0.8.0-setup.exe"
+              class="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs sm:text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity self-start sm:self-auto"
+            >
+              <i data-lucide="download" class="w-3.5 h-3.5"></i>
+              Download Setup v0.8.0
+            </a>
+          </div>
+
+          <div class="px-4 sm:px-6 py-4 sm:py-5 space-y-4 sm:space-y-5">
+            <h2 class="text-lg font-semibold text-foreground">Developer Toolkit &amp; Hardening</h2>
+
+            <div>
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-1.5">Highlights</h3>
+              <ul class="space-y-1 text-sm text-muted-foreground">
+                <li class="flex items-start gap-2">
+                  <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
+                  <strong>wmole doctor</strong>: One-shot dev machine health report — PATH issues, tool versions, cache sizes, disk pressure.
+                </li>
+                <li class="flex items-start gap-2">
+                  <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary shrink-0"></span>
+                  <strong>Pre-commit secret guard</strong>: <code>wmole hook install</code> blocks commits that contain API keys or private keys.
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Features</h3>
+              <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                <li><strong>wmole undo:</strong> List and restore quarantined deletions from the CLI.</li>
+                <li><strong>Per-project .wmolerc:</strong> Repo-local purge/keep rules with glob-based protection.</li>
+                <li><strong>Ports view:</strong> Each listener now shows the project (git repo) that owns it.</li>
+                <li><strong>Faster duplicate scan:</strong> blake2b with first/last-64KB pre-hash elimination.</li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-foreground mb-2">Security</h3>
+              <ul class="space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                <li>GUI: removed unrestricted shell permissions; sidecar is now the only allowed command.</li>
+                <li>GUI: strict Content-Security-Policy enabled.</li>
+                <li>Uninstall launcher no longer passes registry strings through a shell.</li>
+                <li>In-app updater gains ed25519/minisign signature verification support.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
         <!-- Release 0.7.0 -->
         <article class="rounded-xl border bg-card overflow-hidden">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b px-4 sm:px-6 py-4 bg-muted/30">
@@ -497,9 +564,6 @@
                 <div class="flex items-center gap-2 flex-wrap">
                   <i data-lucide="tag" class="w-3.5 h-3.5 text-muted-foreground"></i>
                   <span class="font-semibold text-foreground">v0.7.0</span>
-                  <span class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
-                    Latest Release
-                  </span>
                 </div>
                 <div class="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
                   <i data-lucide="calendar" class="w-3 h-3"></i>

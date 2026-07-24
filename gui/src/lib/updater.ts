@@ -19,6 +19,7 @@ export interface UpdateState {
   notes: string;
   url: string;
   sha256Url: string;
+  sigUrl: string;
   size: number;
   pct: number;
   setupPath: string;
@@ -32,6 +33,7 @@ const init: UpdateState = {
   notes: "",
   url: "",
   sha256Url: "",
+  sigUrl: "",
   size: 0,
   pct: 0,
   setupPath: "",
@@ -53,6 +55,15 @@ listen<{ pct: number }>("update-progress", (e) =>
   update.update((s) => ({ ...s, pct: e.payload.pct })),
 );
 
+// Public key henüz placeholder olduğu için imza doğrulaması zorunlu değil;
+// Rust tarafı bu durumda uyarı emit eder (gerçek anahtar konunca event hiç gelmez).
+listen("update-unsigned-warning", () =>
+  toast(
+    tr("Uyarı: bu güncelleme imza ile doğrulanmadı (yalnızca SHA-256)"),
+    "err",
+  ),
+);
+
 export async function checkForUpdate(silent = true) {
   update.update((s) => ({ ...s, phase: "checking", error: "" }));
   try {
@@ -66,6 +77,7 @@ export async function checkForUpdate(silent = true) {
         notes: r.notes,
         url: r.download_url,
         sha256Url: r.sha256_url,
+        sigUrl: r.sig_url ?? "",
         size: r.size,
       });
       // Manuel kontrolde modalı aç; sessizde sadece status bar ikonu yanar.
@@ -92,6 +104,7 @@ export async function downloadUpdate() {
     const path = await invoke<string>("download_update", {
       url: s.url,
       sha256Url: s.sha256Url,
+      sigUrl: s.sigUrl,
       total: s.size,
     });
     update.update((v) => ({ ...v, phase: "ready", setupPath: path, pct: 100 }));
@@ -99,7 +112,13 @@ export async function downloadUpdate() {
     const msg = String(e);
     const friendly = msg.startsWith("checksum-mismatch")
       ? tr("İndirilen dosya bozuk (doğrulama hatası)")
-      : msg.includes("disk")
+      : msg.startsWith("signature-verification-failed")
+        ? tr(
+            "İmza doğrulaması başarısız — güncelleme paketi güvenilir değil, kurulum iptal edildi",
+          )
+        : msg.startsWith("signature-missing")
+        ? tr("Güncelleme paketi imzasız — kurulum iptal edildi")
+        : msg.includes("disk")
         ? tr("Disk alanı yetersiz veya yazma hatası")
         : msg.includes("network") || msg.includes("stream") || msg.includes("http")
           ? tr("Ağ hatası")

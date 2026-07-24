@@ -20,6 +20,7 @@ Safety: deletes go to the Recycle Bin by default (send2trash).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -93,7 +94,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -173,7 +174,7 @@ def dir_size(path: Path, on_progress=None, max_seconds: Optional[float] = None,
             except OSError:
                 return 0
         walk(path)
-    except Exception:
+    except OSError:
         pass
     if on_progress:
         on_progress(total)
@@ -185,7 +186,7 @@ def load_size_cache() -> dict:
     try:
         data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, ValueError):
         return {}
 
 
@@ -195,7 +196,7 @@ def save_size_cache(cache: dict) -> None:
         tmp = CACHE_FILE.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(cache), encoding="utf-8")
         os.replace(tmp, CACHE_FILE)
-    except Exception:
+    except OSError:
         pass
 
 
@@ -428,7 +429,7 @@ def _debug_log(msg: str) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         with (LOG_DIR / "debug.log").open("a", encoding="utf-8") as fh:
             fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{msg}\n")
-    except Exception:
+    except OSError:
         pass
 
 
@@ -492,7 +493,7 @@ def load_path_list(path_file: Path) -> List[Path]:
             line = line.strip()
             if line and not line.startswith("#"):
                 out.append(Path(os.path.expandvars(os.path.expanduser(line))))
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         _debug_log(f"load_path_list: could not read {path_file}: {exc}")
         return out
     _LIST_CACHE[str(path_file)] = (mtime, list(out))
@@ -526,7 +527,7 @@ def is_protected_path(path: Path) -> bool:
     denylist = load_denylist()
     try:
         p = path.resolve() if path.exists() else path.absolute()
-    except Exception:
+    except OSError:
         p = path
     raw = str(p).rstrip("\\/").lower()
     anchor = str(p.anchor).rstrip("\\/").lower()
@@ -568,7 +569,7 @@ def log_operation(action: str, path: Path, size: int = 0, result: str = "") -> N
         with OP_LOG_FILE.open("a", encoding="utf-8") as fh:
             fh.write(f"{ts}\t{action}\t{size}\t{path}\t{result}\n")
         log_security_event(action, {"path": str(path), "size": size, "result": result})
-    except Exception:
+    except OSError:
         pass
 
 
@@ -662,7 +663,7 @@ def _quarantine_entries() -> list[dict]:
     try:
         data = json.loads(QUARANTINE_INDEX.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
-    except Exception:
+    except (OSError, ValueError):
         return []
 
 
@@ -692,7 +693,7 @@ def quarantine_path(path: Path, size: int = 0) -> str | None:
         _save_quarantine_entries(entries)
         log_operation("delete-quarantine", path, size=size, result=entry_id)
         return None
-    except Exception as exc:
+    except (OSError, shutil.Error) as exc:
         shutil.rmtree(target_dir, ignore_errors=True)
         return f"quarantine: {exc}"
 
@@ -712,7 +713,7 @@ def restore_quarantine(entry_id: str) -> str | None:
         shutil.rmtree(QUARANTINE_DIR / entry_id, ignore_errors=True)
         log_security_event("quarantine-restored", {"id": entry_id, "path": str(destination)})
         return None
-    except Exception as exc:
+    except (OSError, shutil.Error) as exc:
         return f"restore: {exc}"
 
 
@@ -738,7 +739,7 @@ def _onerr_chmod(func, path, exc):
     try:
         os.chmod(path, stat.S_IWRITE)
         func(path)
-    except Exception:
+    except OSError:
         pass
 
 
@@ -1076,9 +1077,103 @@ def load_purge_roots(home: Path = USER) -> List[Path]:
             p = Path(expanded)
             if p.exists() and p not in roots:
                 roots.append(p)
-    except Exception:
+    except OSError:
         return []
     return roots
+
+
+WMOLERC_NAME = ".wmolerc"
+_PROJECT_RC_CACHE: Dict[str, Optional[dict]] = {}
+
+
+def load_project_rc(root: Path) -> Optional[dict]:
+    """Read `.wmolerc` (JSON) from a project root. None when missing/broken.
+
+    Shape: {"purge": ["dist"], "keep": ["packages/*/dist"], "max_depth": 4}
+    """
+    rc_file = root / WMOLERC_NAME
+    if not path_exists(rc_file):
+        return None
+    try:
+        data = json.loads(rc_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _debug_log(f"wmolerc: unreadable {rc_file}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        _debug_log(f"wmolerc: not an object {rc_file}")
+        return None
+    purge = [str(v) for v in data.get("purge", []) if isinstance(v, (str, int))] \
+        if isinstance(data.get("purge"), list) else []
+    keep = [str(v) for v in data.get("keep", []) if isinstance(v, (str, int))] \
+        if isinstance(data.get("keep"), list) else []
+    depth = data.get("max_depth")
+    if not isinstance(depth, int) or isinstance(depth, bool) or depth <= 0:
+        depth = 0
+    return {"root": str(root), "purge": purge, "keep": keep, "max_depth": depth}
+
+
+def find_project_rc(path: Path) -> Optional[dict]:
+    """Nearest `.wmolerc` at or above `path` (directories only)."""
+    try:
+        start = path if path.is_dir() else path.parent
+    except OSError:
+        start = path
+    for parent in [start, *start.parents]:
+        key = str(parent)
+        if key in _PROJECT_RC_CACHE:
+            rc = _PROJECT_RC_CACHE[key]
+        else:
+            rc = load_project_rc(parent)
+            _PROJECT_RC_CACHE[key] = rc
+        if rc is not None:
+            return rc
+    return None
+
+
+def _rc_relative(root: Path, path: Path) -> Optional[str]:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def rc_is_kept(rc: dict, path: Path) -> bool:
+    """True when a `keep` glob covers `path` or one of its parents (whitelist-like)."""
+    rel = _rc_relative(Path(rc.get("root", "")), path)
+    if rel is None:
+        return False
+    parts = rel.lower().split("/")
+    for raw in rc.get("keep", []):
+        pattern = str(raw).replace("\\", "/").strip("/").lower()
+        if not pattern:
+            continue
+        for i in range(len(parts)):
+            if fnmatch.fnmatch("/".join(parts[:i + 1]), pattern):
+                return True
+    return False
+
+
+def rc_allows_purge(rc: Optional[dict], path: Path) -> bool:
+    """Apply a project `.wmolerc` to a purge candidate."""
+    if not rc:
+        return True
+    rel = _rc_relative(Path(rc.get("root", "")), path)
+    if rel is None:
+        return True
+    if rc_is_kept(rc, path):
+        return False
+    purge = [str(v).lower() for v in rc.get("purge", [])]
+    if purge and path.name.lower() not in purge:
+        return False
+    depth = int(rc.get("max_depth", 0) or 0)
+    if depth and len(rel.split("/")) > depth:
+        return False
+    return True
+
+
+def rc_allows_path(path: Path) -> bool:
+    """Convenience wrapper: resolve the nearest `.wmolerc` and evaluate it."""
+    return rc_allows_purge(find_project_rc(path), path)
 
 
 def iter_dev_folders(roots: List[Path]):
@@ -1264,7 +1359,7 @@ def build_purge_categories(roots: List[Path], whitelist: Optional[List[Path]] = 
                            workers: Optional[int] = None) -> List[Category]:
     wl = whitelist or []
     pairs = [(title, p) for title, p in iter_dev_folders(roots)
-             if not (is_whitelisted(p, wl) or is_protected_path(p))]
+             if not (is_whitelisted(p, wl) or is_protected_path(p)) and rc_allows_path(p)]
     workers = workers or min(8, (os.cpu_count() or 4) * 2)
     sizes: Dict[Path, int] = {}
     if pairs:
@@ -1335,6 +1430,9 @@ def build_clean_path_categories(roots: List[Path], days: int = 90) -> List[Categ
             continue
         for child in children:
             if is_protected_path(child):
+                continue
+            rc = find_project_rc(child)
+            if rc and rc_is_kept(rc, child):
                 continue
             try:
                 if child.stat().st_mtime <= cutoff:
@@ -1908,7 +2006,7 @@ def _is_service_running(name: str) -> bool:
     try:
         r = subprocess.run(["sc", "query", name], capture_output=True, text=True, timeout=10, shell=False)
         return "RUNNING" in (r.stdout or "")
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         return False
 
 
@@ -1919,7 +2017,10 @@ def _run_windows_update_reset(dry_run: bool) -> str:
     try:
         if was_running:
             subprocess.run(["net", "stop", "wuauserv"], capture_output=True, text=True, timeout=60, shell=False)
-        subprocess.run(["cmd", "/c", "rmdir /s /q C:\\Windows\\SoftwareDistribution"], capture_output=True, text=True, timeout=120, shell=False)
+        # SystemRoot yerine sabit C:\Windows kullanmak farklı sistem sürücülerinde kırılıyor.
+        soft_dist = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "SoftwareDistribution"
+        subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", str(soft_dist)],
+                       capture_output=True, text=True, timeout=120, shell=False)
         if was_running:
             subprocess.run(["net", "start", "wuauserv"], capture_output=True, text=True, timeout=60, shell=False)
         return "ok: Reset Windows Update"
@@ -1927,6 +2028,16 @@ def _run_windows_update_reset(dry_run: bool) -> str:
         return "timeout"
     except Exception as e:
         return str(e)
+
+
+def launch_uninstaller(uninstall_string: str) -> None:
+    """Registry'den gelen UninstallString'i cmd shell'e sokmadan başlat.
+
+    shell=True, string içindeki `&`/`|`/`>` karakterlerini komut ayırıcı yapar;
+    CreateProcess'e ham komut satırı vermek bu enjeksiyon yüzeyini kapatır.
+    %ProgramFiles% gibi değişkenleri shell yerine burada genişletiyoruz.
+    """
+    subprocess.Popen(os.path.expandvars(uninstall_string), shell=False)
 
 
 def run_optimize(action: OptAction, dry_run: bool = False) -> tuple:
@@ -2290,6 +2401,9 @@ def palette_commands() -> List[dict]:
         {"name": "ports",     "desc": d("List listening dev ports (run CLI to kill)", "Dinleyen dev portları (öldürme CLI'da)"), "action": "exec:ports"},
         {"name": "update",    "desc": d("Check GitHub update status",            "GitHub güncelleme durumunu kontrol et"),     "action": "exec:update"},
         {"name": "help",      "desc": d("Open the help & features screen",      "Yardım & özellikler ekranını aç"),           "action": "view:help"},
+        {"name": "doctor",    "desc": d("Dev machine health report (CLI)",       "Geliştirici makine sağlık raporu (CLI)"),    "action": "exec:doctor"},
+        {"name": "undo",      "desc": d("List/restore quarantined deletions (CLI)", "Karantinadaki silmeleri geri al (CLI)"),  "action": "exec:undo"},
+        {"name": "hook",      "desc": d("Install the secret-scan pre-commit hook (CLI)", "Secret tarayan pre-commit hook kur (CLI)"), "action": "exec:hook"},
         {"name": "large",     "desc": d("List large files in this folder",       "Bu klasördeki büyük dosyaları listele"),     "action": "key:g"},
         {"name": "drives",    "desc": d("Open the drive picker",                 "Sürücü seçiciyi aç"),                        "action": "key:v"},
         {"name": "select",    "desc": d("Toggle current item selection",         "Geçerli öğe seçimini değiştir"),             "action": "key:SPACE"},
@@ -2946,7 +3060,7 @@ def render(scanner: Scanner, view: View, cursor: int, msg: str,
 def open_in_explorer(p: Path) -> None:
     try:
         os.startfile(str(p))  # type: ignore[attr-defined]
-    except Exception:
+    except OSError:
         subprocess.Popen(["explorer", str(p)])
 
 
@@ -3144,7 +3258,7 @@ def _save_config_key(key: str, value) -> None:
         cfg[key] = value
         WMOLE_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    except Exception:
+    except OSError:
         pass
 
 
@@ -3483,6 +3597,21 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                                 msg = f"{len(rows_pp)} listening dev port(s) — manage with: wmole ports --kill <port>"
                             except Exception as e:
                                 msg = f"ports query failed: {e}"
+                        elif action == "exec:doctor":
+                            try:
+                                summary = doctor_report()["summary"]
+                                msg = (f"doctor: ok={summary.get('ok', 0)} warn={summary.get('warn', 0)} "
+                                       f"fail={summary.get('fail', 0)} — full report: wmole doctor")
+                            except Exception as e:
+                                msg = f"doctor failed: {e}"
+                        elif action == "exec:undo":
+                            try:
+                                msg = (f"{len(undo_entries())} restorable item(s) — "
+                                       f"run: wmole undo [<id>]")
+                            except Exception as e:
+                                msg = f"undo query failed: {e}"
+                        elif action == "exec:hook":
+                            msg = "install the secret-scan hook from a repo: wmole hook install"
                         elif action == "exec:update":
                             try:
                                 msg = interactive_tui_update(
@@ -3582,7 +3711,7 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
                     uninst = app.get("uninstall")
                     if uninst:
                         try:
-                            subprocess.Popen(uninst, shell=True)
+                            launch_uninstaller(uninst)
                             leftovers = find_leftover_candidates(app)
                             reg_leftovers = find_registry_leftover_candidates(app)
                             if leftovers:
@@ -3920,7 +4049,7 @@ def _serve_uninstall_run(req: dict, emit, cancel) -> None:
         emit({"id": rid, "ev": "done", "ok": False})
         return
     try:
-        subprocess.Popen(uninst, shell=True)
+        launch_uninstaller(uninst)
         emit({"id": rid, "ev": "item_result", "path": uninst, "ok": True})
         emit({"id": rid, "ev": "done", "ok": True})
     except Exception as exc:
@@ -3973,6 +4102,7 @@ def _serve_ports_list(req: dict, emit, cancel) -> None:
               "name": f"{r['proto']}/{r['port']}", "size": 0, "kind": "port",
               "port": r["port"], "pid": r.get("pid"), "proto": r["proto"],
               "process": r.get("process", ""), "ip": bind_ip,
+              "project": r.get("project", ""),
               "hint": r.get("hint", ""), "selected": False})
     emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(rows)}})
 
@@ -4199,7 +4329,7 @@ def _startup_entries() -> list:
                 winreg.CloseKey(key)
             except OSError:
                 pass
-    except Exception:
+    except (ImportError, OSError):
         pass
     startup_dir = USER / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
     try:
@@ -4207,7 +4337,7 @@ def _startup_entries() -> list:
             for f in startup_dir.iterdir():
                 entries.append({"name": f.name, "command": str(f),
                                 "location": "Startup Folder", "enabled": True})
-    except Exception:
+    except OSError:
         pass
     return entries
 
@@ -4240,7 +4370,7 @@ def _serve_startup_disable(req: dict, emit, cancel) -> None:
             emit({"id": rid, "ev": "item_result", "path": name, "ok": err is None,
                   "error": err})
         emit({"id": rid, "ev": "done", "ok": True})
-    except Exception as exc:
+    except OSError as exc:
         emit({"id": rid, "ev": "error", "code": "startup_failed", "message": str(exc)})
         emit({"id": rid, "ev": "done", "ok": False})
 
@@ -4256,7 +4386,7 @@ def _serve_processes_list(req: dict, emit, cancel) -> None:
                 mem = info["memory_info"].rss if info.get("memory_info") else 0
                 procs.append({"pid": info["pid"], "name": info.get("name") or "?",
                               "mem": mem, "cpu": info.get("cpu_percent") or 0.0})
-            except Exception:
+            except (psutil.Error, OSError, KeyError):
                 continue
     procs.sort(key=lambda x: x["mem"], reverse=True)
     protected_names = {str(v).lower() for v in load_config().get("protected_processes", [])}
@@ -4268,8 +4398,47 @@ def _serve_processes_list(req: dict, emit, cancel) -> None:
     emit({"id": rid, "ev": "done", "ok": True, "summary": {"count": len(procs)}})
 
 
+def _file_digest(path: Path, quick: bool = False, edge: int = 65536) -> Optional[str]:
+    """blake2b digest of a file (no crypto intent, just fast bucketing).
+
+    quick=True hashes only the first+last `edge` bytes, so obvious mismatches
+    are eliminated without reading whole files.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            if quick and size > 2 * edge:
+                h.update(fh.read(edge))
+                fh.seek(-edge, os.SEEK_END)
+                h.update(fh.read(edge))
+            else:
+                for chunk in iter(lambda: fh.read(65536), b""):
+                    h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def _duplicate_groups(paths: List[Path]) -> Dict[str, List[Path]]:
+    """Group same-size files by content using a quick pre-hash pass first."""
+    prelim: Dict[str, List[Path]] = {}
+    for fp in paths:
+        digest = _file_digest(fp, quick=True)
+        if digest is not None:
+            prelim.setdefault(digest, []).append(fp)
+    groups: Dict[str, List[Path]] = {}
+    for candidates in prelim.values():
+        if len(candidates) < 2:
+            continue
+        for fp in candidates:
+            digest = _file_digest(fp, quick=False)
+            if digest is not None:
+                groups.setdefault(digest, []).append(fp)
+    return {digest: rows for digest, rows in groups.items() if len(rows) >= 2}
+
+
 def _serve_duplicates(req: dict, emit, cancel) -> None:
-    import hashlib
     rid = req.get("id")
     roots = [Path(p) for p in req.get("paths", []) if p] or [USER]
     min_size = int(req.get("min_size", 1024 * 1024))  # 1MB default
@@ -4297,22 +4466,11 @@ def _serve_duplicates(req: dict, emit, cancel) -> None:
     for sz, paths in by_size.items():
         if len(paths) < 2:
             continue
-        hashes: dict = {}
-        for fp in paths:
-            if cancel.is_set():
-                emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
-                return
-            try:
-                h = hashlib.md5()
-                with open(fp, "rb") as fh:
-                    for chunk in iter(lambda: fh.read(65536), b""):
-                        h.update(chunk)
-                hashes.setdefault(h.hexdigest(), []).append(fp)
-            except OSError:
-                continue
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        hashes = _duplicate_groups(paths)
         for digest, dups in hashes.items():
-            if len(dups) < 2:
-                continue
             groups += 1
             for fp in dups:
                 emit({"id": rid, "ev": "item", "path": str(fp), "name": fp.name,
@@ -4378,7 +4536,10 @@ def _run_audit(command: list[str], cwd: Path, timeout: int = 90) -> dict:
     if not executable:
         return {"tool": command[0], "status": "unavailable", "output": "tool not installed"}
     try:
-        result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True,
+        # Windows: npm/yarn/pip are .cmd shims; CreateProcess can't resolve the
+        # bare name, so always run the path shutil.which() resolved.
+        resolved = [executable, *command[1:]]
+        result = subprocess.run(resolved, cwd=str(cwd), capture_output=True, text=True,
                                 timeout=timeout, shell=False)
         output = (result.stdout or result.stderr or "").strip()
         return {"tool": command[0], "status": "ok" if result.returncode == 0 else "findings",
@@ -5265,6 +5426,26 @@ DEV_PORT_HINTS: Dict[int, str] = {
 _LOCAL_IPS = {"127.0.0.1", "0.0.0.0", "::1", "::", ""}
 
 
+def process_project_name(pid: Optional[int]) -> str:
+    """Best-effort project label for a PID: git repo root name, else cwd name."""
+    if not pid or not psutil:
+        return ""
+    try:
+        cwd = psutil.Process(int(pid)).cwd()
+    except (psutil.Error, OSError, ValueError):
+        return ""
+    if not cwd:
+        return ""
+    try:
+        path = Path(cwd)
+        for candidate in [path, *path.parents]:
+            if (candidate / ".git").exists():
+                return candidate.name
+        return path.name
+    except OSError:
+        return ""
+
+
 def list_dev_ports(include_all: bool = False) -> List[dict]:
     """Return listening TCP/UDP sockets bound to localhost/0.0.0.0.
 
@@ -5273,6 +5454,7 @@ def list_dev_ports(include_all: bool = False) -> List[dict]:
     if not psutil:
         return []
     rows: Dict[tuple, dict] = {}
+    projects: Dict[int, str] = {}
     for kind in ("tcp", "udp"):
         try:
             conns = psutil.net_connections(kind=kind)
@@ -5303,10 +5485,12 @@ def list_dev_ports(include_all: bool = False) -> List[dict]:
                     name = proc.name()
                     try:
                         exe = proc.exe()
-                    except Exception:
+                    except (psutil.Error, OSError):
                         exe = ""
-                except Exception:
+                except (psutil.Error, OSError):
                     pass
+                if c.pid not in projects:
+                    projects[c.pid] = process_project_name(c.pid)
             rows[key] = {
                 "proto": kind.upper(),
                 "ip": ip,
@@ -5314,6 +5498,7 @@ def list_dev_ports(include_all: bool = False) -> List[dict]:
                 "pid": c.pid,
                 "process": name,
                 "exe": exe,
+                "project": projects.get(c.pid, ""),
                 "hint": DEV_PORT_HINTS.get(port, ""),
             }
     return sorted(rows.values(), key=lambda r: (r["port"], r["proto"]))
@@ -5365,7 +5550,7 @@ def kill_pid(pid: int, dry_run: bool = False, force: bool = True) -> tuple:
             proc.terminate()
         try:
             proc.wait(timeout=3)
-        except Exception:
+        except (psutil.Error, OSError):
             pass
         return (True, f"killed pid {pid}")
     except psutil.NoSuchProcess:
@@ -5429,19 +5614,387 @@ def cli_ports(json_out: bool, kill_target: str = "", dry_run: bool = False,
     if not rows:
         print("no listening localhost ports detected (run as admin to see all).")
         return
-    print(f"{'PROTO':<5} {'PORT':>6}  {'PID':>6}  {'PROCESS':<22} {'BIND':<16} HINT")
-    print("-" * 78)
+    print(f"{'PROTO':<5} {'PORT':>6}  {'PID':>6}  {'PROCESS':<22} {'PROJECT':<20} {'BIND':<16} HINT")
+    print("-" * 98)
     for r in rows:
         print(f"{r['proto']:<5} {r['port']:>6}  {str(r['pid'] or '-'):>6}  "
-              f"{(r['process'] or '-')[:22]:<22} {r['ip']:<16} {r['hint']}")
+              f"{(r['process'] or '-')[:22]:<22} {(r.get('project') or '-')[:20]:<20} "
+              f"{r['ip']:<16} {r['hint']}")
     print()
     print("Kill: wmole ports --kill <port|port:N|pid:N|all>   (add --dry-run to preview)")
+
+
+DOCTOR_TOOLS = ("python", "node", "npm", "git")
+DOCTOR_CACHE_KEYS = ("npm-cache", "pip-cache", "yarn-cache", "cargo-cache")
+DOCTOR_CACHE_WARN_BYTES = 2 * 1024**3
+
+
+def _doctor_row(check: str, status: str, detail: str) -> dict:
+    return {"check": check, "status": status, "detail": detail}
+
+
+def _doctor_path_entries() -> List[dict]:
+    """PATH hygiene: duplicated and non-existent entries."""
+    raw = [part.strip().strip('"') for part in os.environ.get("PATH", "").split(os.pathsep)]
+    entries = [part for part in raw if part]
+    seen: Dict[str, int] = {}
+    duplicates: List[str] = []
+    missing: List[str] = []
+    for entry in entries:
+        key = os.path.normcase(os.path.expandvars(entry)).rstrip("\\/")
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] == 2:
+            duplicates.append(entry)
+        try:
+            if not Path(os.path.expandvars(entry)).exists():
+                missing.append(entry)
+        except OSError:
+            missing.append(entry)
+    rows = [_doctor_row("PATH entries", "ok", f"{len(entries)} entry(s)")]
+    rows.append(_doctor_row(
+        "PATH duplicates", "warn" if duplicates else "ok",
+        ", ".join(duplicates[:5]) if duplicates else "no duplicates"))
+    rows.append(_doctor_row(
+        "PATH missing", "warn" if missing else "ok",
+        ", ".join(missing[:5]) if missing else "all entries exist"))
+    return rows
+
+
+def _tool_version(name: str, timeout: int = 8) -> dict:
+    executable = shutil.which(name)
+    if not executable:
+        return _doctor_row(name, "unavailable", "not found on PATH")
+    try:
+        result = subprocess.run([executable, "--version"], capture_output=True, text=True,
+                                timeout=timeout, shell=False)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return _doctor_row(name, "fail", f"version check failed: {exc}")
+    output = (result.stdout or result.stderr or "").strip().splitlines()
+    version = output[0].strip() if output else ""
+    if result.returncode != 0 or not version:
+        return _doctor_row(name, "fail", f"unexpected output from {executable}")
+    return _doctor_row(name, "ok", f"{version} ({executable})")
+
+
+def _doctor_caches() -> List[dict]:
+    rows: List[dict] = []
+    by_key = {entry[0]: entry for entry in FIXED_PATH_CATEGORIES}
+    for key in DOCTOR_CACHE_KEYS:
+        entry = by_key.get(key)
+        if not entry:
+            continue
+        title, path = entry[1], entry[3]
+        if not path_exists(path):
+            rows.append(_doctor_row(title, "unavailable", "not present"))
+            continue
+        try:
+            size = quick_size(path)
+        except OSError:
+            rows.append(_doctor_row(title, "unavailable", "unreadable"))
+            continue
+        status = "warn" if size >= DOCTOR_CACHE_WARN_BYTES else "ok"
+        rows.append(_doctor_row(title, status, f"{human_size(size)} at {path}"))
+    return rows
+
+
+def _doctor_disk() -> dict:
+    root = USER.anchor or "C:\\"
+    try:
+        usage = shutil.disk_usage(root)
+    except OSError as exc:
+        return _doctor_row("system disk", "unavailable", f"{root}: {exc}")
+    free_ratio = usage.free / usage.total if usage.total else 0.0
+    if free_ratio < 0.05:
+        status = "fail"
+    elif free_ratio < 0.15:
+        status = "warn"
+    else:
+        status = "ok"
+    return _doctor_row("system disk", status,
+                       f"{human_size(usage.free)} free of {human_size(usage.total)} on {root}")
+
+
+def _doctor_wmole_state() -> List[dict]:
+    rows: List[dict] = []
+    if not path_exists(WMOLE_DIR):
+        return [_doctor_row("~/.wmole", "unavailable", "not initialized yet")]
+    if path_exists(CONFIG_FILE):
+        try:
+            json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            rows.append(_doctor_row("config.json", "ok", str(CONFIG_FILE)))
+        except (OSError, ValueError) as exc:
+            rows.append(_doctor_row("config.json", "fail", f"unreadable: {exc}"))
+    else:
+        rows.append(_doctor_row("config.json", "unavailable", "using built-in defaults"))
+    if path_exists(CACHE_FILE):
+        try:
+            json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            rows.append(_doctor_row("cache.json", "ok", str(CACHE_FILE)))
+        except (OSError, ValueError) as exc:
+            rows.append(_doctor_row("cache.json", "warn", f"corrupt, delete to reset: {exc}"))
+    else:
+        rows.append(_doctor_row("cache.json", "unavailable", "no size cache yet"))
+    entries = _quarantine_entries()
+    try:
+        size = quick_size(QUARANTINE_DIR) if path_exists(QUARANTINE_DIR) else 0
+    except OSError:
+        size = 0
+    status = "warn" if size >= 1024**3 else "ok"
+    rows.append(_doctor_row("quarantine", status,
+                            f"{len(entries)} entry(s), {human_size(size)}"))
+    return rows
+
+
+def doctor_report() -> dict:
+    """Developer-machine health snapshot as a list of {check,status,detail} rows."""
+    checks: List[dict] = []
+    checks.extend(_doctor_path_entries())
+    for tool in DOCTOR_TOOLS:
+        checks.append(_tool_version(tool))
+    checks.extend(_doctor_caches())
+    checks.append(_doctor_disk())
+    checks.extend(_doctor_wmole_state())
+    summary = {"ok": 0, "warn": 0, "fail": 0, "unavailable": 0}
+    for row in checks:
+        summary[row["status"]] = summary.get(row["status"], 0) + 1
+    return {"checks": checks, "summary": summary,
+            "healthy": summary.get("fail", 0) == 0}
+
+
+DOCTOR_STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red", "unavailable": "grey50"}
+DOCTOR_STATUS_ICON = {"ok": "+", "warn": "!", "fail": "x", "unavailable": "-"}
+
+
+def cli_doctor(json_out: bool = False) -> None:
+    report = doctor_report()
+    if json_out:
+        print(json.dumps(report, indent=2))
+        return
+    console.print("[bold]wmole doctor[/bold]")
+    for row in report["checks"]:
+        style = DOCTOR_STATUS_STYLE.get(row["status"], "white")
+        icon = DOCTOR_STATUS_ICON.get(row["status"], "?")
+        console.print(f"  [{style}]{icon}[/{style}] {row['check']:<26} "
+                      f"[{style}]{row['status']:<12}[/{style}] {row['detail']}")
+    s = report["summary"]
+    console.print(f"\n  ok={s.get('ok', 0)}  warn={s.get('warn', 0)}  "
+                  f"fail={s.get('fail', 0)}  unavailable={s.get('unavailable', 0)}")
+
+
+def undo_entries(limit: int = 20) -> List[dict]:
+    """Most recent quarantine entries, newest first."""
+    entries = sorted(_quarantine_entries(), key=lambda row: int(row.get("created", 0)),
+                     reverse=True)
+    rows = []
+    for entry in entries[:limit]:
+        created = int(entry.get("created", 0))
+        rows.append({
+            "id": entry.get("id", ""),
+            "path": entry.get("original", ""),
+            "name": entry.get("name", ""),
+            "size": int(entry.get("size", 0) or 0),
+            "created": created,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created)) if created else "",
+        })
+    return rows
+
+
+RECYCLE_BIN_HINT = ("Items deleted straight to the Recycle Bin are not tracked here - "
+                    "restore those from the Windows Recycle Bin.")
+
+
+def cli_undo(entry_id: str = "", json_out: bool = False, limit: int = 20) -> None:
+    """List restorable quarantine entries, or restore one by id."""
+    if entry_id:
+        error = restore_quarantine(entry_id)
+        payload = {"id": entry_id, "restored": error is None, "error": error}
+        if json_out:
+            print(json.dumps(payload, indent=2))
+        elif error:
+            console.print(f"[red]undo failed:[/red] {error}")
+            console.print(f"[grey50]{RECYCLE_BIN_HINT}[/grey50]")
+        else:
+            console.print(f"[green]restored[/green] {entry_id}")
+        return
+    rows = undo_entries(limit=limit)
+    if json_out:
+        print(json.dumps({"entries": rows, "count": len(rows),
+                          "hint": RECYCLE_BIN_HINT}, indent=2))
+        return
+    if not rows:
+        console.print("no quarantined items to undo.")
+        console.print(f"[grey50]{RECYCLE_BIN_HINT}[/grey50]")
+        return
+    console.print(f"{'ID':<24} {'WHEN':<20} {'SIZE':>10}  PATH")
+    for row in rows:
+        console.print(f"{row['id']:<24} {row['created_at']:<20} "
+                      f"{human_size(row['size']):>10}  {row['path']}")
+    console.print("\nRestore: wmole undo <id>")
+    console.print(f"[grey50]{RECYCLE_BIN_HINT}[/grey50]")
+
+
+HOOK_SIGNATURE = "# wmole-pre-commit-hook"
+HOOK_TEMPLATE = """#!/bin/sh
+{signature}
+# Blocks commits containing secrets. Remove with: wmole hook uninstall
+{command} hook --run || exit 1
+exit 0
+"""
+
+
+def _hook_command() -> str:
+    """Kurulu hook'un çağıracağı komut.
+
+    Frozen build'de sys.executable zaten wmole.exe'dir; ayrıca `__file__`
+    PyInstaller'ın geçici çıkarma dizinini gösterir ve süreç bitince silinir,
+    yani onu hook'a yazmak kalıcı olarak bozuk bir hook üretir.
+    """
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable).resolve()}"'
+    return f'"{Path(sys.executable).resolve()}" "{Path(__file__).resolve()}"'
+
+
+def git_repo_root(start: Path) -> Optional[Path]:
+    """Nearest ancestor containing a `.git` directory."""
+    try:
+        base = start if start.is_dir() else start.parent
+    except OSError:
+        base = start
+    for candidate in [base, *base.parents]:
+        if (candidate / ".git").is_dir():
+            return candidate
+    return None
+
+
+def _staged_files(root: Path) -> List[Path]:
+    git = shutil.which("git")
+    if not git:
+        return []
+    try:
+        result = subprocess.run([git, "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+                                cwd=str(root), capture_output=True, text=True,
+                                timeout=30, shell=False)
+    except (subprocess.SubprocessError, OSError) as exc:
+        _debug_log(f"hook: staged file listing failed: {exc}")
+        return []
+    if result.returncode != 0:
+        return []
+    out = []
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            out.append(root / line)
+    return out
+
+
+def scan_staged_secrets(root: Path) -> dict:
+    """Run the secret patterns over staged files only."""
+    findings: list[dict] = []
+    files = _staged_files(root)
+    for path in files:
+        try:
+            if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+                continue
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in raw[:4096]:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            for kind, pattern in SECRET_PATTERNS:
+                match = pattern.search(line)
+                if match:
+                    value = match.group(0)
+                    preview = value[:4] + "..." + value[-4:] if len(value) > 10 else "[redacted]"
+                    findings.append({"type": kind, "path": str(path), "line": line_no,
+                                     "preview": preview, "severity": "high"})
+                    break
+    return {"root": str(root), "scanned": len(files), "findings": findings}
+
+
+def hook_path(root: Path) -> Path:
+    return root / ".git" / "hooks" / "pre-commit"
+
+
+def install_pre_commit_hook(root: Path, force: bool = False) -> dict:
+    target = hook_path(root)
+    if path_exists(target):
+        try:
+            existing = target.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return {"ok": False, "path": str(target), "error": f"unreadable hook: {exc}"}
+        if HOOK_SIGNATURE not in existing and not force:
+            return {"ok": False, "path": str(target),
+                    "error": "a pre-commit hook already exists; re-run with --force to replace it"}
+    body = HOOK_TEMPLATE.format(signature=HOOK_SIGNATURE, command=_hook_command())
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8", newline="\n")
+        os.chmod(target, 0o755)
+    except OSError as exc:
+        return {"ok": False, "path": str(target), "error": f"write failed: {exc}"}
+    log_security_event("hook-installed", {"path": str(target)})
+    return {"ok": True, "path": str(target), "action": "installed"}
+
+
+def uninstall_pre_commit_hook(root: Path) -> dict:
+    target = hook_path(root)
+    if not path_exists(target):
+        return {"ok": True, "path": str(target), "action": "absent"}
+    try:
+        existing = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"ok": False, "path": str(target), "error": f"unreadable hook: {exc}"}
+    if HOOK_SIGNATURE not in existing:
+        return {"ok": False, "path": str(target),
+                "error": "pre-commit hook was not installed by wmole; left untouched"}
+    try:
+        target.unlink()
+    except OSError as exc:
+        return {"ok": False, "path": str(target), "error": f"remove failed: {exc}"}
+    log_security_event("hook-uninstalled", {"path": str(target)})
+    return {"ok": True, "path": str(target), "action": "removed"}
+
+
+def cli_hook(action: str, json_out: bool = False, force: bool = False,
+             cwd: Optional[Path] = None) -> int:
+    """`wmole hook install|uninstall|--run` for the git repo at `cwd`."""
+    base = cwd or Path.cwd()
+    root = git_repo_root(base)
+    if not root:
+        payload = {"ok": False, "error": "not inside a git repository"}
+        print(json.dumps(payload, indent=2) if json_out else payload["error"])
+        return 1
+    if action == "run":
+        report = scan_staged_secrets(root)
+        if json_out:
+            print(json.dumps(report, indent=2))
+        elif report["findings"]:
+            console.print("[red]wmole: potential secrets in staged files[/red]")
+            for row in report["findings"]:
+                console.print(f"  {row['type']:<16} {row['path']}:{row['line']}  {row['preview']}")
+            console.print("Commit blocked. Remove the secrets or use `git commit --no-verify`.")
+        return 1 if report["findings"] else 0
+    if action == "install":
+        result = install_pre_commit_hook(root, force=force)
+    elif action == "uninstall":
+        result = uninstall_pre_commit_hook(root)
+    else:
+        result = {"ok": False, "error": f"unknown hook action: {action} (use install/uninstall)"}
+    if json_out:
+        print(json.dumps(result, indent=2))
+    elif result.get("ok"):
+        console.print(f"[green]hook {result.get('action', 'ok')}[/green] {result.get('path', '')}")
+    else:
+        console.print(f"[red]{result.get('error', 'failed')}[/red]")
+    return 0 if result.get("ok") else 1
 
 
 def powershell_completion_script() -> str:
     return """Register-ArgumentCompleter -CommandName wmole, py -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $modes = 'analyze','clean','purge','status','optimize','uninstall','installer','installers','update','remove','completion','ports'
+    $modes = 'analyze','clean','purge','status','optimize','uninstall','installer','installers','update','remove','completion','ports','doctor','undo','hook'
     $modes | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {
         [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
     }
@@ -5466,7 +6019,7 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
 def main_cli() -> None:
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
-                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports", "serve"])
+                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports", "doctor", "undo", "hook", "serve"])
     p.add_argument("targets", nargs="*", help="optional paths for analyze/purge/installers")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true", dest="json_out")
@@ -5483,11 +6036,13 @@ def main_cli() -> None:
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
     p.add_argument("--no-cache", action="store_true", help="bypass size cache for this run")
+    p.add_argument("--force", action="store_true", help="hook mode: overwrite an existing pre-commit hook")
+    p.add_argument("--run", action="store_true", help="hook mode: scan staged files (used by the installed hook)")
     args = p.parse_args()
 
     # Do not start a final background check while the user is disabling it.
     # Other commands preserve the fire-and-forget startup behavior.
-    if args.mode != "serve" and not (args.mode == "update" and args.disable_auto):
+    if args.mode not in ("serve", "hook") and not (args.mode == "update" and args.disable_auto):
         start_auto_update_check()
 
     target_paths = [Path(t).expanduser() for t in args.targets]
@@ -5542,6 +6097,13 @@ def main_cli() -> None:
     elif args.mode == "ports":
         cli_ports(json_out=args.json_out, kill_target=args.kill,
                   dry_run=args.dry_run, include_all=args.all_binds)
+    elif args.mode == "doctor":
+        cli_doctor(json_out=args.json_out)
+    elif args.mode == "undo":
+        cli_undo(entry_id=args.targets[0] if args.targets else "", json_out=args.json_out)
+    elif args.mode == "hook":
+        action = "run" if args.run else (args.targets[0].strip().lower() if args.targets else "")
+        sys.exit(cli_hook(action=action, json_out=args.json_out, force=args.force))
     else:
         run_tui(initial_view=args.mode if args.mode in ("status", "optimize", "uninstall", "purge", "installer", "installers") else "analyze", use_cache=not args.no_cache)
 

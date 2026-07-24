@@ -1,6 +1,7 @@
 import json
 import io
 import contextlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -248,6 +249,9 @@ class WmoleBehaviorTests(unittest.TestCase):
                 "ports",
                 "update",
                 "help",
+                "doctor",
+                "undo",
+                "hook",
                 "large",
                 "drives",
                 "select",
@@ -729,6 +733,360 @@ class WmoleBehaviorTests(unittest.TestCase):
         self.assertTrue(all("requires --yes" in r["result"] for r in highs))
         # high-risk actions must never have been executed
         self.assertTrue(all(r["result"] != "ran" for r in highs))
+
+class DoctorReportTests(unittest.TestCase):
+    def test_doctor_report_rows_follow_the_check_schema(self):
+        with mock.patch.object(mole, "_tool_version",
+                               side_effect=lambda name, **kw: mole._doctor_row(name, "unavailable", "stub")), \
+             mock.patch.object(mole, "_doctor_caches", return_value=[]), \
+             mock.patch.object(mole, "_doctor_wmole_state", return_value=[]):
+            report = mole.doctor_report()
+
+        self.assertIn("checks", report)
+        self.assertIn("summary", report)
+        for row in report["checks"]:
+            self.assertEqual(set(row), {"check", "status", "detail"})
+            self.assertIn(row["status"], ("ok", "warn", "fail", "unavailable"))
+        names = [row["check"] for row in report["checks"]]
+        for tool in mole.DOCTOR_TOOLS:
+            self.assertIn(tool, names)
+        self.assertEqual(sum(report["summary"].values()), len(report["checks"]))
+
+    def test_doctor_path_check_flags_duplicates_and_missing_entries(self):
+        with tempfile.TemporaryDirectory() as td:
+            real = str(Path(td) / "bin")
+            (Path(td) / "bin").mkdir()
+            ghost = str(Path(td) / "nope")
+            path_value = os.pathsep.join([real, real, ghost])
+            with mock.patch.dict(os.environ, {"PATH": path_value}, clear=False):
+                rows = {row["check"]: row for row in mole._doctor_path_entries()}
+        self.assertEqual(rows["PATH duplicates"]["status"], "warn")
+        self.assertEqual(rows["PATH missing"]["status"], "warn")
+        self.assertIn("nope", rows["PATH missing"]["detail"])
+
+    def test_tool_version_reports_unavailable_when_not_on_path(self):
+        with mock.patch.object(mole.shutil, "which", return_value=None):
+            row = mole._tool_version("definitely-not-a-tool")
+        self.assertEqual(row["status"], "unavailable")
+
+    def test_cli_doctor_json_is_machine_readable(self):
+        buf = io.StringIO()
+        stub = {"checks": [{"check": "x", "status": "ok", "detail": "d"}],
+                "summary": {"ok": 1}, "healthy": True}
+        with mock.patch.object(mole, "doctor_report", return_value=stub):
+            with contextlib.redirect_stdout(buf):
+                mole.cli_doctor(json_out=True)
+        self.assertEqual(json.loads(buf.getvalue()), stub)
+
+
+class ProjectRcTests(unittest.TestCase):
+    def setUp(self):
+        mole._PROJECT_RC_CACHE.clear()
+
+    def tearDown(self):
+        mole._PROJECT_RC_CACHE.clear()
+
+    def _repo(self, td, payload):
+        root = Path(td) / "repo"
+        root.mkdir()
+        if payload is not None:
+            (root / mole.WMOLERC_NAME).write_text(payload, encoding="utf-8")
+        return root
+
+    def test_load_project_rc_parses_known_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td, json.dumps(
+                {"purge": ["dist", "node_modules"], "keep": ["packages/*/dist"], "max_depth": 4}))
+            rc = mole.load_project_rc(root)
+        self.assertEqual(rc["purge"], ["dist", "node_modules"])
+        self.assertEqual(rc["keep"], ["packages/*/dist"])
+        self.assertEqual(rc["max_depth"], 4)
+
+    def test_broken_rc_is_ignored_and_debug_logged(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td, "{not json")
+            with mock.patch.object(mole, "_debug_log") as logged:
+                rc = mole.load_project_rc(root)
+        self.assertIsNone(rc)
+        self.assertTrue(logged.called)
+
+    def test_keep_glob_protects_matching_subtree(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td, json.dumps({"keep": ["packages/*/dist"]}))
+            rc = mole.load_project_rc(root)
+            kept = root / "packages" / "ui" / "dist"
+            nested = kept / "assets"
+            other = root / "apps" / "web" / "dist"
+        self.assertTrue(mole.rc_is_kept(rc, kept))
+        self.assertTrue(mole.rc_is_kept(rc, nested))
+        self.assertFalse(mole.rc_is_kept(rc, other))
+
+    def test_rc_allows_purge_honors_names_and_max_depth(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td, json.dumps({"purge": ["dist"], "max_depth": 2}))
+            rc = mole.load_project_rc(root)
+            self.assertTrue(mole.rc_allows_purge(rc, root / "app" / "dist"))
+            # name not listed in `purge`
+            self.assertFalse(mole.rc_allows_purge(rc, root / "app" / "node_modules"))
+            # deeper than max_depth
+            self.assertFalse(mole.rc_allows_purge(rc, root / "a" / "b" / "dist"))
+            # outside the rc root is untouched by the rc
+            self.assertTrue(mole.rc_allows_purge(rc, Path(td) / "other" / "dist"))
+
+    def test_find_project_rc_walks_up_and_missing_rc_allows_everything(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td, json.dumps({"purge": ["dist"]}))
+            deep = root / "a" / "b"
+            deep.mkdir(parents=True)
+            self.assertIsNotNone(mole.find_project_rc(deep))
+            mole._PROJECT_RC_CACHE.clear()
+            plain = Path(td) / "plain"
+            plain.mkdir()
+            self.assertIsNone(mole.find_project_rc(plain))
+            self.assertTrue(mole.rc_allows_path(plain / "dist"))
+
+
+class UndoTests(unittest.TestCase):
+    def test_undo_entries_are_newest_first_with_readable_fields(self):
+        entries = [
+            {"id": "old", "original": r"C:\a", "name": "a", "size": 10, "created": 100},
+            {"id": "new", "original": r"C:\b", "name": "b", "size": 20, "created": 200},
+        ]
+        with mock.patch.object(mole, "_quarantine_entries", return_value=entries):
+            rows = mole.undo_entries()
+        self.assertEqual([r["id"] for r in rows], ["new", "old"])
+        self.assertEqual(rows[0]["path"], r"C:\b")
+        self.assertTrue(rows[0]["created_at"])
+
+    def test_cli_undo_json_listing_includes_recycle_bin_hint(self):
+        buf = io.StringIO()
+        with mock.patch.object(mole, "_quarantine_entries", return_value=[]):
+            with contextlib.redirect_stdout(buf):
+                mole.cli_undo(json_out=True)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["count"], 0)
+        self.assertIn("Recycle Bin", data["hint"])
+
+    def test_cli_undo_with_id_calls_restore_quarantine(self):
+        buf = io.StringIO()
+        with mock.patch.object(mole, "restore_quarantine", return_value=None) as restore:
+            with contextlib.redirect_stdout(buf):
+                mole.cli_undo(entry_id="abc123", json_out=True)
+        restore.assert_called_once_with("abc123")
+        self.assertTrue(json.loads(buf.getvalue())["restored"])
+
+    def test_cli_undo_reports_restore_failure(self):
+        buf = io.StringIO()
+        with mock.patch.object(mole, "restore_quarantine", return_value="original path already exists"):
+            with contextlib.redirect_stdout(buf):
+                mole.cli_undo(entry_id="abc123", json_out=True)
+        data = json.loads(buf.getvalue())
+        self.assertFalse(data["restored"])
+        self.assertIn("already exists", data["error"])
+
+
+class GitHookTests(unittest.TestCase):
+    def _repo(self, td):
+        root = Path(td) / "repo"
+        (root / ".git" / "hooks").mkdir(parents=True)
+        return root
+
+    def test_frozen_hook_command_omits_script_path(self):
+        # PyInstaller build'inde __file__ geçici çıkarma dizinini gösterir ve
+        # süreç bitince silinir; hook'a yazılırsa kalıcı olarak bozulur.
+        with mock.patch.object(mole.sys, "frozen", True, create=True), \
+                mock.patch.object(mole.sys, "executable", r"C:\Program Files\wmole\wmole.exe"):
+            command = mole._hook_command()
+        self.assertIn("wmole.exe", command)
+        self.assertNotIn("mole.py", command)
+
+    def test_source_hook_command_includes_script_path(self):
+        with mock.patch.object(mole.sys, "frozen", False, create=True):
+            command = mole._hook_command()
+        self.assertIn("mole.py", command)
+
+    def test_installed_hook_body_uses_hook_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            with mock.patch.object(mole, "log_security_event"), \
+                    mock.patch.object(mole, "_hook_command", return_value='"X.exe"'):
+                mole.install_pre_commit_hook(root)
+            body = mole.hook_path(root).read_text(encoding="utf-8")
+        self.assertIn('"X.exe" hook --run', body)
+
+    def test_install_and_uninstall_roundtrip(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            with mock.patch.object(mole, "log_security_event"):
+                res = mole.install_pre_commit_hook(root)
+                self.assertTrue(res["ok"])
+                hook = mole.hook_path(root)
+                self.assertTrue(hook.exists())
+                self.assertIn(mole.HOOK_SIGNATURE, hook.read_text(encoding="utf-8"))
+
+                res = mole.uninstall_pre_commit_hook(root)
+            self.assertTrue(res["ok"])
+            self.assertFalse(mole.hook_path(root).exists())
+
+    def test_install_refuses_to_clobber_a_foreign_hook_without_force(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            hook = mole.hook_path(root)
+            hook.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+            res = mole.install_pre_commit_hook(root)
+            self.assertFalse(res["ok"])
+            self.assertIn("--force", res["error"])
+            self.assertIn("echo mine", hook.read_text(encoding="utf-8"))
+
+            with mock.patch.object(mole, "log_security_event"):
+                forced = mole.install_pre_commit_hook(root, force=True)
+            self.assertTrue(forced["ok"])
+            self.assertIn(mole.HOOK_SIGNATURE, hook.read_text(encoding="utf-8"))
+
+    def test_uninstall_leaves_foreign_hooks_untouched(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            hook = mole.hook_path(root)
+            hook.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+            res = mole.uninstall_pre_commit_hook(root)
+            self.assertFalse(res["ok"])
+            self.assertTrue(hook.exists())
+
+    def test_git_repo_root_finds_the_enclosing_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            nested = root / "src" / "pkg"
+            nested.mkdir(parents=True)
+            self.assertEqual(mole.git_repo_root(nested), root)
+            self.assertIsNone(mole.git_repo_root(Path(td)))
+
+    def test_scan_staged_secrets_flags_a_staged_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            leaky = root / "config.env"
+            leaky.write_text("AWS_KEY=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
+            with mock.patch.object(mole, "_staged_files", return_value=[leaky]):
+                report = mole.scan_staged_secrets(root)
+        self.assertEqual(report["scanned"], 1)
+        self.assertTrue(report["findings"])
+        self.assertNotIn("AKIAABCDEFGHIJKLMNOP", json.dumps(report))
+
+    def test_cli_hook_run_exits_nonzero_on_findings(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            leaky = root / "config.env"
+            leaky.write_text("AWS_KEY=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
+            buf = io.StringIO()
+            with mock.patch.object(mole, "_staged_files", return_value=[leaky]):
+                with contextlib.redirect_stdout(buf):
+                    code = mole.cli_hook("run", json_out=True, cwd=root)
+            self.assertEqual(code, 1)
+
+            buf = io.StringIO()
+            with mock.patch.object(mole, "_staged_files", return_value=[]):
+                with contextlib.redirect_stdout(buf):
+                    code = mole.cli_hook("run", json_out=True, cwd=root)
+            self.assertEqual(code, 0)
+
+    def test_cli_hook_outside_a_repo_fails_cleanly(self):
+        with tempfile.TemporaryDirectory() as td:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = mole.cli_hook("install", json_out=True, cwd=Path(td))
+        self.assertEqual(code, 1)
+        self.assertIn("git repository", json.loads(buf.getvalue())["error"])
+
+
+class PortsProjectTests(unittest.TestCase):
+    def test_process_project_name_prefers_the_git_repo_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "my-repo"
+            (root / ".git").mkdir(parents=True)
+            nested = root / "apps" / "api"
+            nested.mkdir(parents=True)
+            fake_psutil = mock.Mock(Error=Exception)
+            fake_psutil.Process.return_value.cwd.return_value = str(nested)
+            with mock.patch.object(mole, "psutil", fake_psutil):
+                self.assertEqual(mole.process_project_name(4242), "my-repo")
+
+    def test_process_project_name_is_blank_on_access_denied(self):
+        class Denied(Exception):
+            pass
+
+        fake_psutil = mock.Mock(Error=Denied)
+        fake_psutil.Process.side_effect = Denied("nope")
+        with mock.patch.object(mole, "psutil", fake_psutil):
+            self.assertEqual(mole.process_project_name(1), "")
+        self.assertEqual(mole.process_project_name(0), "")
+
+    def test_cli_ports_json_carries_the_project_field(self):
+        rows = [{"proto": "TCP", "ip": "127.0.0.1", "port": 3000, "pid": 10,
+                 "process": "node.exe", "exe": "", "project": "my-repo", "hint": ""}]
+        buf = io.StringIO()
+        with mock.patch.object(mole, "list_dev_ports", return_value=rows):
+            with contextlib.redirect_stdout(buf):
+                mole.cli_ports(json_out=True)
+        self.assertEqual(json.loads(buf.getvalue())["ports"][0]["project"], "my-repo")
+
+    def test_cli_ports_text_output_shows_the_project_column(self):
+        rows = [{"proto": "TCP", "ip": "127.0.0.1", "port": 3000, "pid": 10,
+                 "process": "node.exe", "exe": "", "project": "my-repo", "hint": "Next.js"}]
+        buf = io.StringIO()
+        with mock.patch.object(mole, "list_dev_ports", return_value=rows):
+            with contextlib.redirect_stdout(buf):
+                mole.cli_ports(json_out=False)
+        out = buf.getvalue()
+        self.assertIn("PROJECT", out)
+        self.assertIn("my-repo", out)
+
+
+class DuplicateHashTests(unittest.TestCase):
+    def test_quick_digest_only_reads_the_file_edges(self):
+        with tempfile.TemporaryDirectory() as td:
+            head = b"H" * 65536
+            tail = b"T" * 65536
+            a = Path(td) / "a.bin"
+            b = Path(td) / "b.bin"
+            a.write_bytes(head + b"\x00" * 1000 + tail)
+            b.write_bytes(head + b"\xff" * 1000 + tail)
+            # Same edges -> same quick digest, different full digest.
+            self.assertEqual(mole._file_digest(a, quick=True), mole._file_digest(b, quick=True))
+            self.assertNotEqual(mole._file_digest(a), mole._file_digest(b))
+            self.assertEqual(len(mole._file_digest(a)), 32)
+
+    def test_duplicate_groups_skips_full_hash_for_unique_prehashes(self):
+        with tempfile.TemporaryDirectory() as td:
+            same_a = Path(td) / "same_a.bin"
+            same_b = Path(td) / "same_b.bin"
+            unique = Path(td) / "unique.bin"
+            same_a.write_bytes(b"payload" * 100)
+            same_b.write_bytes(b"payload" * 100)
+            unique.write_bytes(b"different" * 100)
+
+            real_digest = mole._file_digest
+            full_calls = []
+
+            def spy(path, quick=False, edge=65536):
+                if not quick:
+                    full_calls.append(path)
+                return real_digest(path, quick=quick, edge=edge)
+
+            with mock.patch.object(mole, "_file_digest", side_effect=spy):
+                groups = mole._duplicate_groups([same_a, same_b, unique])
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(sorted(next(iter(groups.values()))), sorted([same_a, same_b]))
+        # The unique file never reached the expensive full-hash pass.
+        self.assertNotIn(unique, full_calls)
+        self.assertEqual(sorted(full_calls), sorted([same_a, same_b]))
+
+    def test_duplicate_groups_is_empty_when_nothing_matches(self):
+        with tempfile.TemporaryDirectory() as td:
+            a = Path(td) / "a.bin"
+            b = Path(td) / "b.bin"
+            a.write_bytes(b"a" * 500)
+            b.write_bytes(b"b" * 500)
+            self.assertEqual(mole._duplicate_groups([a, b]), {})
 
 
 if __name__ == "__main__":

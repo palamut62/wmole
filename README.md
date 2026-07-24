@@ -60,6 +60,10 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 | `wmole update [--json]` | Pull (if git) + dependency refresh. |
 | `wmole remove [--dry-run] [--json]` | Remove local wmole state under `~/.wmole`. |
 | `wmole completion --shell powershell [--install]` | Print/install PowerShell completion script. |
+| `wmole ports [--all-binds] [--kill <port\|port:N\|pid:N\|all>]` | Listening dev ports with owning process/project. |
+| `wmole doctor [--json]` | Dev machine health report (PATH, toolchain, caches, disk, `~/.wmole`). |
+| `wmole undo [<id>] [--json]` | List quarantined deletions or restore one by id. |
+| `wmole hook install [--force]` / `wmole hook uninstall` | Manage the secret-scanning git pre-commit hook. |
 
 ## Analyze Explorer
 
@@ -112,6 +116,20 @@ Useful knobs:
 - `WMOLE_SCAN_WORKERS`: scan parallelism (default `min(8, cpu*2)`, `1` = single-thread).
 - `--no-cache`: bypass the `~/.wmole/cache.json` size cache for this run.
 - `~/.wmole/cache.json`: mtime-keyed size cache (auto-managed; ignored safely if corrupt).
+
+### Per-project `.wmolerc`
+
+Drop a `.wmolerc` (JSON) in a repo root to scope purge/clean inside that tree:
+
+```json
+{ "purge": ["dist", "node_modules"], "keep": ["packages/*/dist"], "max_depth": 4 }
+```
+
+- `purge`: only these folder names are offered as purge candidates in this tree.
+- `keep`: glob patterns (repo-relative) that behave like a whitelist; matched paths and their subtrees are never deleted.
+- `max_depth`: ignore candidates deeper than this many path segments below the repo root.
+
+A malformed `.wmolerc` is ignored silently and noted in `~/.wmole/logs/debug.log`.
 
 ## Getting Started
 

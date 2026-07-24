@@ -8,6 +8,26 @@ const GH_REPO: &str = "palamut62/wmole";
 const UA: &str = "wmole-updater";
 const RELEASE_URL_PREFIX: &str = "https://github.com/palamut62/wmole/releases/download/";
 
+/// Minisign (ed25519) public key — güncelleme paketlerinin gerçekliğini doğrular.
+///
+/// TODO: Buraya gerçek public key'i yaz. Üretmek için: `minisign -G -p wmole.pub -s wmole.key`
+/// ardından `wmole.pub` dosyasının İKİNCİ satırını (base64 gövde, "RWQ..." ile başlar)
+/// buraya kopyala. Secret key CI'da `MINISIGN_KEY` secret'ı olarak tutulur ve release
+/// job'ı `minisign -S -s wmole.key -m wmole-X.Y.Z-setup.exe` ile `.minisig` üretir.
+/// Detay: README "Güncelleme imzalama" bölümü.
+///
+/// Placeholder olduğu sürece (aşağıdaki `PUBKEY_PLACEHOLDER` sabiti ile aynı) imza
+/// doğrulaması ZORUNLU DEĞİLDİR: kullanıcıya "update-unsigned-warning" event'i emit edilir
+/// ama akış bozulmaz. Gerçek anahtar yazıldığı an doğrulama otomatik olarak zorunlu olur
+/// (derleme zamanı `cfg` yerine çalışma zamanı karşılaştırması, böylece unutulan bir
+/// feature flag yüzünden doğrulama sessizce kapalı kalamaz).
+const UPDATE_PUBKEY: &str = "RWQPLACEHOLDER00000000000000000000000000000000000000000";
+const PUBKEY_PLACEHOLDER: &str = "RWQPLACEHOLDER00000000000000000000000000000000000000000";
+
+fn pubkey_is_placeholder() -> bool {
+    UPDATE_PUBKEY == PUBKEY_PLACEHOLDER || UPDATE_PUBKEY.trim().is_empty()
+}
+
 fn validate_release_url(url: &str, expected_suffix: &str) -> Result<(), String> {
     if url.starts_with(RELEASE_URL_PREFIX) && url.ends_with(expected_suffix) {
         Ok(())
@@ -40,6 +60,7 @@ pub struct UpdateInfo {
     notes: String,
     download_url: String,
     sha256_url: String,
+    sig_url: String,
     size: u64,
 }
 
@@ -81,42 +102,58 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
         _ => latest != current,
     };
 
-    // -setup.exe asset'i + eşleşen .sha256 dosyası.
-    let (download_url, size) = rel
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with("-setup.exe"))
-        .map(|a| (a.browser_download_url.clone(), a.size))
-        .unwrap_or((String::new(), 0));
+    // -setup.exe asset'i + AYNI dosyaya ait .sha256 / .minisig yardımcı dosyaları.
+    // (Eskiden ilk ".sha256" ile biten asset alınıyordu; birden fazla asset olan
+    //  release'lerde yanlış dosyanın hash'i çekilebiliyordu — adı setup'tan türetiyoruz.)
+    let setup = rel.assets.iter().find(|a| a.name.ends_with("-setup.exe"));
+    let (setup_name, download_url, size) = match setup {
+        Some(a) => (a.name.clone(), a.browser_download_url.clone(), a.size),
+        None => (String::new(), String::new(), 0),
+    };
 
-    let sha256_url = rel
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with(".sha256"))
-        .map(|a| a.browser_download_url.clone())
-        .unwrap_or_default();
+    let find_named = |suffix: &str| -> String {
+        if setup_name.is_empty() {
+            return String::new();
+        }
+        let want = format!("{setup_name}{suffix}");
+        rel.assets
+            .iter()
+            .find(|a| a.name == want)
+            .map(|a| a.browser_download_url.clone())
+            .unwrap_or_default()
+    };
+    let sha256_url = find_named(".sha256");
+    let sig_url = find_named(".minisig");
 
+    // sha256 dosyası yoksa indirme zaten "invalid-update-url" ile patlardı;
+    // güncellemeyi "mevcut" göstermek yerine baştan eleriz.
     Ok(UpdateInfo {
-        available: newer && !rel.prerelease && !download_url.is_empty(),
+        available: newer && !rel.prerelease && !download_url.is_empty() && !sha256_url.is_empty(),
         current,
         latest,
         notes: rel.body,
         download_url,
         sha256_url,
+        sig_url,
         size,
     })
 }
 
-/// Setup.exe'yi indir → ilerleme emit et → SHA-256 doğrula → dosya yolunu döndür.
+/// Setup.exe'yi indir → ilerleme emit et → SHA-256 (ucuz erken eleme) →
+/// minisign/ed25519 imza doğrula → dosya yolunu döndür.
 #[tauri::command]
 pub async fn download_update(
     app: AppHandle,
     url: String,
     sha256_url: String,
+    sig_url: String,
     total: u64,
 ) -> Result<String, String> {
     validate_release_url(&url, "-setup.exe")?;
     validate_release_url(&sha256_url, ".sha256")?;
+    if !sig_url.is_empty() {
+        validate_release_url(&sig_url, ".minisig")?;
+    }
     let dir = app.path().temp_dir().map_err(|e| format!("disk: {e}"))?;
     let target = dir.join("wmole-update-setup.exe");
 
@@ -190,6 +227,50 @@ pub async fn download_update(
         return Err(format!("checksum-mismatch:{got}:{expected}"));
     }
 
+    // --- Asimetrik imza doğrulaması (asıl güvenlik katmanı) ---
+    // SHA-256 yalnızca bozuk indirmeyi yakalar; release'i ele geçiren biri hem exe'yi
+    // hem .sha256'yı değiştirebilir. Minisign imzası secret key olmadan üretilemez.
+    if pubkey_is_placeholder() {
+        // TODO: Gerçek UPDATE_PUBKEY yazıldığında bu dal ölür ve imza zorunlu olur.
+        let _ = app.emit("update-unsigned-warning", "update-signature-not-enforced");
+    } else {
+        let sig_url = if sig_url.is_empty() {
+            let _ = std::fs::remove_file(&target);
+            return Err("signature-missing".into());
+        } else {
+            sig_url
+        };
+
+        let sig_text = client
+            .get(&sig_url)
+            .header("User-Agent", UA)
+            .send()
+            .await
+            .map_err(|e| format!("network: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("http: {e}"))?
+            .text()
+            .await
+            .map_err(|e| format!("network: {e}"))?;
+
+        let verified = (|| -> Result<(), String> {
+            let pk = minisign_verify::PublicKey::from_base64(UPDATE_PUBKEY)
+                .map_err(|e| format!("pubkey: {e}"))?;
+            let sig = minisign_verify::Signature::decode(&sig_text)
+                .map_err(|e| format!("sig-decode: {e}"))?;
+            let data = std::fs::read(&target).map_err(|e| format!("disk: {e}"))?;
+            pk.verify(&data, &sig, false)
+                .map_err(|e| format!("verify: {e}"))
+        })();
+
+        if let Err(reason) = verified {
+            // Doğrulanamayan installer'ı diskte bırakma.
+            let _ = std::fs::remove_file(&target);
+            eprintln!("update signature verification failed: {reason}");
+            return Err("signature-verification-failed".into());
+        }
+    }
+
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -215,7 +296,7 @@ pub fn install_update(app: AppHandle, setup_path: String) -> Result<(), String> 
         .arg("/S")
         .spawn()
         .map_err(|e| format!("spawn: {e}"))?; // kurulum başlatılamadı
-    // Dosya kilidini bırak; installer kurup uygulamayı yeniden başlatacak.
+                                              // Dosya kilidini bırak; installer kurup uygulamayı yeniden başlatacak.
     app.exit(0);
     Ok(())
 }

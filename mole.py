@@ -26,6 +26,7 @@ import hmac
 import json
 import os
 import platform
+import queue as _queue
 import re
 import shutil
 import secrets
@@ -34,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent import futures as _futures
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,7 +96,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -134,8 +136,60 @@ def free_space_gb() -> float:
     return free / 1024**3
 
 
+_REPARSE_ATTR = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def is_reparse_dirent(entry) -> bool:
+    """True for junctions/symlinks, from the flags os.scandir already cached.
+
+    `DirEntry.is_symlink()` is not enough on Windows: a *junction* carries a
+    reparse tag other than IO_REPARSE_TAG_SYMLINK, so is_symlink() reports
+    False and a naive walker happily descends through it. pnpm's node_modules
+    is a farm of such junctions pointing back into a shared `.pnpm` store, and
+    following them turns a directory walk into a cyclic one (measured: depth
+    191 and still climbing after 90s on a single node_modules). Checking the
+    attribute flag instead catches both link kinds.
+    """
+    try:
+        return bool(entry.stat(follow_symlinks=False).st_file_attributes & _REPARSE_ATTR)
+    except (AttributeError, OSError):
+        try:
+            return entry.is_symlink()
+        except OSError:
+            return False
+
+
+def prune_reparse_dirs(dirpath: str, dirnames: List[str]) -> None:
+    """In-place `os.walk` pruning of junction/symlink subdirectories.
+
+    os.walk(followlinks=False) only filters entries whose is_symlink() is True,
+    which lets Windows junctions through. Every walker in this module routes its
+    directory pruning here so no traversal can cycle."""
+    if not dirnames:
+        return
+    kept = []
+    for d in dirnames:
+        try:
+            attrs = os.stat(os.path.join(dirpath, d),
+                            follow_symlinks=False).st_file_attributes  # type: ignore[attr-defined]
+            if attrs & _REPARSE_ATTR:
+                continue
+        except (AttributeError, OSError):
+            pass
+        kept.append(d)
+    dirnames[:] = kept
+
+
 def dir_size(path: Path, on_progress=None, max_seconds: Optional[float] = None,
-             max_files: Optional[int] = None) -> int:
+             max_files: Optional[int] = None, on_truncated=None) -> int:
+    """Total bytes under `path`.
+
+    Never descends into reparse points (see is_reparse_dirent) — their content
+    is counted where it physically lives, so linked trees are neither re-walked
+    nor double counted. `on_truncated` is called with no arguments when a
+    budget limit cut the walk short, so callers can label the result as a
+    lower bound instead of presenting it as exact.
+    """
     total = 0
     last_emit = 0
     started = time.time()
@@ -149,6 +203,8 @@ def dir_size(path: Path, on_progress=None, max_seconds: Optional[float] = None,
                 for entry in it:
                     try:
                         if entry.is_dir(follow_symlinks=False):
+                            if is_reparse_dirent(entry):
+                                continue
                             if not walk(entry.path):
                                 return False
                             continue
@@ -173,7 +229,8 @@ def dir_size(path: Path, on_progress=None, max_seconds: Optional[float] = None,
                 return os.stat(path).st_size
             except OSError:
                 return 0
-        walk(path)
+        if not walk(path) and on_truncated:
+            on_truncated()
     except OSError:
         pass
     if on_progress:
@@ -218,9 +275,19 @@ def cache_set(cache: dict, path: Path, mtime: float, size: int) -> None:
     cache[str(path)] = {"mtime": mtime, "size": size, "scanned_at": time.time()}
 
 
+# Upper bound on how long a single artifact directory may be sized. One
+# pathological tree must not be able to stall a whole scan; when the budget is
+# hit the size is reported as a lower bound (Item.truncated) rather than exact.
+PURGE_DIR_BUDGET_SECONDS = 20.0
+
+
 def sized_dir(path: Path, cache: Optional[dict] = None,
-              lock: "Optional[threading.Lock]" = None) -> int:
-    """Compute dir size, consulting/updating an optional mtime cache (in place)."""
+              lock: "Optional[threading.Lock]" = None,
+              max_seconds: Optional[float] = None) -> tuple[int, bool]:
+    """Size a dir via the mtime cache. Returns (size, truncated).
+
+    `truncated` is True when `max_seconds` cut the walk short, meaning the size
+    is a lower bound. Truncated results are deliberately not cached."""
     mtime = None
     try:
         mtime = path.stat().st_mtime
@@ -233,15 +300,18 @@ def sized_dir(path: Path, cache: Optional[dict] = None,
         else:
             hit = cache_get(cache, path, mtime)
         if hit is not None:
-            return hit
-    size = dir_size(path)
-    if cache is not None and mtime is not None:
+            return hit, False
+    cut = []
+    size = dir_size(path, max_seconds=max_seconds,
+                    on_truncated=lambda: cut.append(True))
+    truncated = bool(cut)
+    if cache is not None and mtime is not None and not truncated:
         if lock is not None:
             with lock:
                 cache_set(cache, path, mtime, size)
         else:
             cache_set(cache, path, mtime, size)
-    return size
+    return size, truncated
 
 
 def should_redraw(last_draw: float, now: float, scanner_active: bool,
@@ -546,6 +616,66 @@ def is_protected_path(path: Path) -> bool:
     if path_exists(p / ".git"):
         return True
     return any(raw == base or raw.startswith(base + "\\") for base in protected)
+
+
+class ScanFilter:
+    """Whitelist/denylist/protection check hoisted out of the per-candidate path.
+
+    `is_protected_path()` re-reads config.json and denylist.txt, calls
+    `Path.resolve()` and stats `<dir>/.git` on *every* call — measured at 27 ms
+    per candidate, i.e. 14s of pure overhead for a 512-candidate scan. A scan
+    tests thousands of paths against lists that cannot change mid-scan, so the
+    lists are snapshotted once here.
+
+    resolve() is kept only where it can matter. Candidates come from walkers
+    that never cross a reparse point, so no *parent* component of a candidate
+    can be a link; only the roots (resolved once, up front) and the candidate's
+    own final component need the full realpath.
+
+    This is a scan-time filter, not the safety gate: `delete_path()` still runs
+    the authoritative `is_protected_path()` on every target before removing it.
+    """
+
+    def __init__(self, whitelist: Optional[List[Path]] = None) -> None:
+        cfg = load_config()
+        self.protected = [str(Path(v)).rstrip("\\/").lower()
+                          for v in cfg.get("protected_defaults", [])]
+        self.denylist = [str(d).rstrip("\\/").lower() for d in load_denylist()]
+        self.denylist = [d for d in self.denylist if d]
+        self.whitelist = [str(w).rstrip("\\/").lower() for w in (whitelist or [])]
+        self.user_root = str(USER).rstrip("\\/").lower()
+
+    @staticmethod
+    def resolve_root(root: Path) -> Path:
+        """Roots are few and may themselves be junctions — resolve them once."""
+        try:
+            return root.resolve()
+        except OSError:
+            return root
+
+    def _key(self, path: Path) -> tuple[str, Path]:
+        try:
+            p = path.resolve() if _is_reparse_point(path) else Path(os.path.abspath(path))
+        except OSError:
+            p = path
+        return str(p).rstrip("\\/").lower(), p
+
+    def rejects(self, path: Path) -> bool:
+        """True when `path` must not be offered as a cleanup candidate."""
+        raw, p = self._key(path)
+        for w in self.whitelist:
+            if raw == w or raw.startswith(w + os.sep):
+                return True
+        if raw == str(p.anchor).rstrip("\\/").lower() or raw == self.user_root:
+            return True
+        for d in self.denylist:
+            if raw == d or raw.startswith(d + "\\"):
+                return True
+        if any(raw == base or raw.startswith(base + "\\") for base in self.protected):
+            return True
+        if ".git" in [part.lower() for part in p.parts]:
+            return True
+        return path_exists(p / ".git")
 
 
 def parse_paths_arg(text: str) -> List[Path]:
@@ -864,6 +994,8 @@ class Item:
     selected: bool = False
     deleted: bool = False
     error: Optional[str] = None
+    # True when a sizing budget cut the walk short: `size` is a lower bound.
+    truncated: bool = False
 
 
 @dataclass
@@ -1032,7 +1164,10 @@ DEV_CATEGORY_ICONS: Dict[str, str] = {
 }
 
 SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information", "Windows", "ProgramData",
-             "Program Files", "Program Files (x86)", "AppData"}
+             "Program Files", "Program Files (x86)", "AppData",
+             # Never a cleanup target, and object stores make it a large share
+             # of the walk cost across a directory full of repositories.
+             ".git"}
 
 INSTALLER_EXTS = {".exe", ".msi", ".iso", ".zip", ".7z", ".dmg", ".pkg"}
 
@@ -1180,6 +1315,7 @@ def iter_dev_folders(roots: List[Path]):
     for root in roots:
         for dirpath, dirnames, _ in os.walk(root, onerror=lambda e: None):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith("$")]
+            prune_reparse_dirs(dirpath, dirnames)
             matched_here = []
             for d in list(dirnames):
                 title = DEV_FOLDER_CATEGORIES.get(d)
@@ -1201,7 +1337,8 @@ def _file_count_and_size(path: Path) -> tuple[int, int]:
             return 0, 0
     count = 0
     total = 0
-    for root, _dirs, files in os.walk(path, onerror=lambda e: None):
+    for root, dirs, files in os.walk(path, onerror=lambda e: None):
+        prune_reparse_dirs(root, dirs)
         for name in files:
             try:
                 total += os.stat(os.path.join(root, name)).st_size
@@ -1223,7 +1360,8 @@ def find_large_files(path: Path, minimum_size: int, on_progress=None) -> List[di
         return large
     scanned = 0
     last_emit = time.time()
-    for root, _dirs, files in os.walk(path, onerror=lambda e: None):
+    for root, dirs, files in os.walk(path, onerror=lambda e: None):
+        prune_reparse_dirs(root, dirs)
         for name in files:
             p = Path(root) / name
             try:
@@ -1354,30 +1492,127 @@ def build_drive_picker_category() -> Category:
     return cat
 
 
+def _streaming_map(pool: ThreadPoolExecutor, fn, items, window: int, cancel=None):
+    """Like Executor.map, but pulls from `items` lazily.
+
+    Executor.map submits every item before yielding anything, so a generator
+    source is fully drained first. This keeps at most `window` jobs in flight
+    and yields results in completion order."""
+    pending: list = []
+    source = iter(items)
+    exhausted = False
+    while True:
+        while not exhausted and len(pending) < max(1, window):
+            if cancel is not None and cancel.is_set():
+                exhausted = True
+                break
+            try:
+                pending.append(pool.submit(fn, next(source)))
+            except StopIteration:
+                exhausted = True
+        if not pending:
+            return
+        done, still = _futures.wait(pending, return_when=_futures.FIRST_COMPLETED)
+        pending = list(still)
+        for fut in done:
+            try:
+                yield fut.result()
+            except Exception as exc:  # a single unreadable dir must not abort
+                _debug_log(f"_streaming_map: {exc}")
+
+
+def iter_purge_candidates(roots: List[Path], scan_filter: "ScanFilter",
+                          workers: int = 4, cancel=None):
+    """Yield (title, path) purge candidates as they are found.
+
+    Roots are walked concurrently and results are streamed, so sizing can start
+    on the first candidate instead of waiting for the whole discovery pass
+    (measured at 97s across this machine's six default roots)."""
+    queue: "_queue.Queue" = _queue.Queue(maxsize=512)
+    done = object()
+
+    def walk_one(root: Path) -> None:
+        try:
+            for title, p in iter_dev_folders([root]):
+                if cancel is not None and cancel.is_set():
+                    return
+                if scan_filter.rejects(p) or not rc_allows_path(p):
+                    continue
+                queue.put((title, p))
+        except Exception as exc:  # one bad root must not kill the scan
+            _debug_log(f"iter_purge_candidates: {root}: {exc}")
+
+    pool = ThreadPoolExecutor(max_workers=max(1, min(workers, len(roots) or 1)))
+    futures = [pool.submit(walk_one, r) for r in roots]
+
+    def close() -> None:
+        for f in futures:
+            f.exception()
+        queue.put(done)
+
+    threading.Thread(target=close, daemon=True).start()
+    try:
+        while True:
+            entry = queue.get()
+            if entry is done:
+                return
+            yield entry
+    finally:
+        pool.shutdown(wait=False)
+
+
 def build_purge_categories(roots: List[Path], whitelist: Optional[List[Path]] = None,
                            cache: Optional[dict] = None,
-                           workers: Optional[int] = None) -> List[Category]:
-    wl = whitelist or []
-    pairs = [(title, p) for title, p in iter_dev_folders(roots)
-             if not (is_whitelisted(p, wl) or is_protected_path(p)) and rc_allows_path(p)]
+                           workers: Optional[int] = None,
+                           on_item=None, on_progress=None, cancel=None,
+                           dir_budget: Optional[float] = PURGE_DIR_BUDGET_SECONDS) -> List[Category]:
+    """Discover and size project build artifacts under `roots`.
+
+    Discovery and sizing are pipelined: each candidate is sized as soon as it is
+    found. `on_item(title, item)` and `on_progress(done, label)` fire as results
+    land so callers can stream them, and `cancel` is honoured between items
+    rather than only at the end.
+    """
     workers = workers or min(8, (os.cpu_count() or 4) * 2)
-    sizes: Dict[Path, int] = {}
-    if pairs:
-        cache_lock = threading.Lock()
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for p, sz in pool.map(lambda pr: (pr[1], sized_dir(pr[1], cache, cache_lock)), pairs):
-                sizes[p] = sz
+    scan_filter = ScanFilter(whitelist)
+    roots = [ScanFilter.resolve_root(r) for r in roots]
+    cache_lock = threading.Lock()
     by_title: Dict[str, Category] = {}
-    for title, p in pairs:
-        cat = by_title.setdefault(title, Category(
-            key=f"dev-{title}",
-            title=title,
-            description="project build artifacts",
-            icon=DEV_CATEGORY_ICONS.get(title, "📦"),
-            safe_default=True,
-            scanning=False,
-        ))
-        cat.items.append(Item(path=p, size=sizes.get(p, 0), selected=True))
+    done = 0
+
+    def size_one(pair):
+        title, p = pair
+        if cancel is not None and cancel.is_set():
+            # Already-queued jobs return immediately so a cancel is not held up
+            # by the full window of pending sizing work.
+            return title, Item(path=p, size=0, selected=False, truncated=True)
+        size, truncated = sized_dir(p, cache, cache_lock, max_seconds=dir_budget)
+        return title, Item(path=p, size=size, selected=True, truncated=truncated)
+
+    candidates = iter_purge_candidates(roots, scan_filter, workers=workers, cancel=cancel)
+    # NOT Executor.map: it materialises the whole iterable up front, which would
+    # re-serialise discovery ahead of sizing. Keep a bounded window of in-flight
+    # sizing jobs instead so both phases overlap.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for title, item in _streaming_map(pool, size_one, candidates,
+                                          window=workers * 2, cancel=cancel):
+            if cancel is not None and cancel.is_set():
+                break
+            cat = by_title.setdefault(title, Category(
+                key=f"dev-{title}",
+                title=title,
+                description="project build artifacts",
+                icon=DEV_CATEGORY_ICONS.get(title, "📦"),
+                safe_default=True,
+                scanning=False,
+            ))
+            cat.items.append(item)
+            done += 1
+            if on_item:
+                on_item(cat, item)
+            if on_progress:
+                on_progress(done, str(item.path))
+
     categories = list(by_title.values())
     for cat in categories:
         cat.items.sort(key=lambda item: item.size, reverse=True)
@@ -1394,6 +1629,7 @@ def build_installer_categories(roots: List[Path], days: int = 30) -> List[Catego
             continue
         for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: None):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith("$")]
+            prune_reparse_dirs(dirpath, dirnames)
             for name in filenames:
                 p = Path(dirpath) / name
                 if p.suffix.lower() not in INSTALLER_EXTS:
@@ -1535,7 +1771,8 @@ def old_installers(days: int = 30) -> List[Item]:
     for d in [USER / "Downloads", USER / "Desktop"]:
         if not d.exists():
             continue
-        for root, _, files in os.walk(d, onerror=lambda e: None):
+        for root, dirs, files in os.walk(d, onerror=lambda e: None):
+            prune_reparse_dirs(root, dirs)
             for f in files:
                 if Path(f).suffix.lower() in INSTALLER_EXTS:
                     p = Path(root) / f
@@ -1551,7 +1788,14 @@ def old_installers(days: int = 30) -> List[Item]:
 class Scanner:
     def __init__(self, whitelist: Optional[List[Path]] = None,
                  profile: str = "full", roots: Optional[List[Path]] = None,
-                 use_cache: bool = True) -> None:
+                 use_cache: bool = True, on_item=None, on_progress=None,
+                 cancel=None) -> None:
+        # on_item(category, item) / on_progress(done, label) let a caller stream
+        # results while the scan runs; `cancel` is a threading.Event checked
+        # between items so a long scan can actually be stopped.
+        self.on_item = on_item
+        self.on_progress = on_progress
+        self.cancel = cancel
         self.categories: List[Category] = []
         self.status: str = "Initializing…"
         self.done: bool = False
@@ -1619,10 +1863,17 @@ class Scanner:
             self.done = True
             return
         if self.profile == "purge":
+            def note(n: int, label: str) -> None:
+                self.status = f"Sized {n} artifact folder(s) — {label}"
+                if self.on_progress:
+                    self.on_progress(n, label)
             for cat in build_purge_categories(self.roots or load_purge_roots() or discover_scan_roots(),
                                               self.whitelist,
                                               cache=self.cache if self.use_cache else None,
-                                              workers=self.workers):
+                                              workers=self.workers,
+                                              on_item=self.on_item,
+                                              on_progress=note,
+                                              cancel=self.cancel):
                 self._add(cat)
             if self.use_cache:
                 save_size_cache(self.cache)
@@ -3939,26 +4190,48 @@ def _serve_scan(req: dict, emit, cancel) -> None:
 
     profile = {"clean": "clean", "purge": "purge",
                "installers": "installers", "categories": "full"}.get(mode, "clean")
+
+    # Stream every artifact the moment it has been sized. Previously the whole
+    # scan ran as one blocking call that emitted nothing and only looked at
+    # `cancel` after it returned, so the UI sat at 0/0 and Cancel did nothing.
+    streamed: set = set()
+
+    def on_item(cat, it) -> None:
+        streamed.add(str(it.path))
+        emit({"id": rid, "ev": "item", "path": str(it.path),
+              "name": it.path.name, "size": int(it.size),
+              "kind": cat.key, "category": cat.title,
+              "truncated": bool(getattr(it, "truncated", False)),
+              "selected": bool(it.selected)})
+
+    def on_progress(done: int, label: str) -> None:
+        emit({"id": rid, "ev": "progress", "done": done, "total": 0,
+              "label": label})
+
     scanner = Scanner(whitelist=load_whitelist(), profile=profile,
-                      roots=paths or None, use_cache=not req.get("no_cache"))
+                      roots=paths or None, use_cache=not req.get("no_cache"),
+                      on_item=on_item, on_progress=on_progress, cancel=cancel)
     scanner.run()
     if cancel.is_set():
         emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
         return
     report = collect_selected_targets(scanner.categories, estimated=not paths)
-    count = 0
+    count = len(streamed)
     total = report.get("total", 0)
+    # Profiles that do not stream (clean/installers/full) still emit here; any
+    # item already streamed above is skipped so the UI never double-counts.
     for cat in scanner.categories:
         for it in cat.items:
             if cancel.is_set():
                 emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
                 return
-            if it.deleted:
+            if it.deleted or str(it.path) in streamed:
                 continue
             count += 1
             emit({"id": rid, "ev": "item", "path": str(it.path),
                   "name": it.path.name, "size": int(it.size),
                   "kind": cat.key, "category": cat.title,
+                  "truncated": bool(getattr(it, "truncated", False)),
                   "selected": bool(it.selected)})
     emit({"id": rid, "ev": "done", "ok": True,
           "summary": {"count": count, "bytes": total}})
@@ -4446,7 +4719,8 @@ def _serve_duplicates(req: dict, emit, cancel) -> None:
     by_size: dict = {}
     scanned = 0
     for root in roots:
-        for dirpath, _dirs, files in os.walk(root):
+        for dirpath, dirs, files in os.walk(root):
+            prune_reparse_dirs(dirpath, dirs)
             if cancel.is_set():
                 emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
                 return
@@ -4496,6 +4770,7 @@ def scan_secrets(root: Path, cancel=None, max_files: int = 5000) -> dict:
         return {"root": str(root), "scanned": 0, "findings": [], "error": "path not found"}
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SCAN_SKIP_DIRS]
+        prune_reparse_dirs(dirpath, dirs)
         if cancel is not None and cancel.is_set():
             break
         for filename in files:
@@ -4555,6 +4830,7 @@ def supply_chain_audit(root: Path) -> dict:
     project_roots: dict[str, set[str]] = {}
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SCAN_SKIP_DIRS]
+        prune_reparse_dirs(dirpath, dirs)
         for filename in files:
             if filename not in {"package.json", "package-lock.json", "requirements.txt",
                                 "pyproject.toml", "Cargo.toml", "Cargo.lock"}:

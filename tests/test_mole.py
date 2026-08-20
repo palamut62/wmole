@@ -546,6 +546,131 @@ class WmoleBehaviorTests(unittest.TestCase):
             self.assertLessEqual(capped, 350)
             self.assertGreater(capped, 0)
 
+    @staticmethod
+    def _make_junction(link: Path, target: Path) -> bool:
+        """Create a real Windows directory junction. False when unavailable."""
+        if os.name != "nt":
+            return False
+        import subprocess
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                           capture_output=True)
+        return r.returncode == 0 and link.exists()
+
+    def test_dir_size_does_not_follow_directory_junctions(self):
+        # pnpm's node_modules is a farm of junctions pointing back into a shared
+        # store. DirEntry.is_symlink() is False for a junction, so a walker that
+        # only checks that descends through them and cycles: on a real pnpm repo
+        # this reached depth 191 and never terminated.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "store"
+            (root / "pkg").mkdir(parents=True)
+            (root / "pkg" / "f.bin").write_bytes(b"z" * 500)
+            farm = Path(td) / "node_modules"
+            farm.mkdir()
+            if not self._make_junction(farm / "pkg", root / "pkg"):
+                self.skipTest("directory junctions unavailable")
+
+            # The junction target is counted where it lives, never through the link.
+            self.assertEqual(mole.dir_size(root), 500)
+            self.assertEqual(mole.dir_size(farm), 0)
+
+    def test_dir_size_terminates_on_cyclic_junction(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "a"
+            (root / "deep").mkdir(parents=True)
+            (root / "deep" / "f.bin").write_bytes(b"q" * 42)
+            if not self._make_junction(root / "deep" / "loop", root):
+                self.skipTest("directory junctions unavailable")
+
+            # Without junction pruning this recurses until RecursionError.
+            self.assertEqual(mole.dir_size(root), 42)
+
+    def test_iter_dev_folders_does_not_descend_through_junctions(self):
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            (real / "sub" / "node_modules").mkdir(parents=True)
+            linked = Path(td) / "linked"
+            if not self._make_junction(linked, real):
+                self.skipTest("directory junctions unavailable")
+
+            found = [p for _t, p in mole.iter_dev_folders([Path(td)])]
+
+            self.assertIn(real / "sub" / "node_modules", found)
+            self.assertNotIn(linked / "sub" / "node_modules", found)
+
+    def test_sized_dir_reports_truncation_and_skips_caching_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "big"
+            root.mkdir()
+            (root / "f.bin").write_bytes(b"w" * 64)
+
+            size, truncated = mole.sized_dir(root)
+            self.assertEqual(size, 64)
+            self.assertFalse(truncated)
+
+            cache: dict = {}
+            with mock.patch.object(mole, "dir_size",
+                                   side_effect=lambda p, **kw: (
+                                       kw["on_truncated"](), 10)[1]):
+                size, truncated = mole.sized_dir(root, cache, max_seconds=0.01)
+            self.assertTrue(truncated)
+            # A lower bound must never be cached as if it were the real size.
+            self.assertEqual(cache, {})
+
+    def test_git_dirs_are_pruned_from_scans(self):
+        self.assertIn(".git", mole.SKIP_DIRS)
+
+    def test_scan_filter_matches_is_protected_path_on_denylist(self):
+        with tempfile.TemporaryDirectory() as td:
+            deny = Path(td) / "data"
+            deny.mkdir()
+            (Path(td) / "database").mkdir()
+            with mock.patch.object(mole, "load_denylist", return_value=[deny]):
+                sf = mole.ScanFilter(whitelist=[])
+                self.assertTrue(sf.rejects(deny))
+                self.assertTrue(sf.rejects(deny / "sub"))
+                self.assertFalse(sf.rejects(Path(td) / "database"))
+
+    def test_scan_filter_rejects_repo_roots_and_whitelist(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / ".git").mkdir(parents=True)
+            keep = Path(td) / "keep"
+            keep.mkdir()
+            sf = mole.ScanFilter(whitelist=[keep])
+            self.assertTrue(sf.rejects(repo))
+            self.assertTrue(sf.rejects(keep))
+            self.assertTrue(sf.rejects(keep / "nested"))
+            self.assertFalse(sf.rejects(Path(td) / "plain"))
+
+    def test_purge_scan_streams_items_and_honours_cancel(self):
+        import threading
+        with tempfile.TemporaryDirectory() as td:
+            for name in ("one", "two", "three"):
+                nm = Path(td) / name / "node_modules"
+                nm.mkdir(parents=True)
+                (nm / "x.js").write_bytes(b"j" * 128)
+
+            events = []
+            cancel = threading.Event()
+            mole._serve_scan({"id": "s1", "mode": "purge", "paths": [td],
+                              "no_cache": True}, events.append, cancel)
+
+            kinds = [e["ev"] for e in events]
+            self.assertIn("item", kinds)
+            self.assertIn("progress", kinds)
+            paths = {e["path"] for e in events if e["ev"] == "item"}
+            self.assertEqual(len(paths), 3)
+            # No item may be emitted twice (streamed + flushed at the end).
+            self.assertEqual(len([e for e in events if e["ev"] == "item"]), 3)
+            self.assertTrue(events[-1]["ok"])
+
+            events.clear()
+            cancel.set()
+            mole._serve_scan({"id": "s2", "mode": "purge", "paths": [td],
+                              "no_cache": True}, events.append, cancel)
+            self.assertTrue(events[-1].get("cancelled"))
+
     def test_size_cache_roundtrip_and_invalidation(self):
         with tempfile.TemporaryDirectory() as td:
             cache_file = Path(td) / "cache.json"

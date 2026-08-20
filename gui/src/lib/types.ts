@@ -77,4 +77,6 @@ export interface ScanItem {
   kind: string;
   category?: string;
   selected: boolean;
+  /** Sizing hit its per-directory budget: `size` is a lower bound. */
+  truncated?: boolean;
 }

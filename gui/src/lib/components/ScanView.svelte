@@ -45,17 +45,34 @@
     items = [];
     scanning = true;
     progress = { done: 0, total: 0, label: "" };
+    // The sidecar streams each artifact as soon as it is sized, so flush into
+    // `items` on a timer instead of waiting for the scan to finish — a large
+    // purge scan used to show nothing at all until it was completely done.
     const buf: ScanItem[] = [];
-    await request({ op: "scan", mode: mode as any }, (e: SidecarEvent) => {
-      if (e.ev === "started") activeId = String(e.id);
-      if (e.ev === "item") buf.push(e as unknown as ScanItem);
-      if (e.ev === "progress")
-        progress = {
-          done: e.done as number,
-          total: e.total as number,
-          label: String(e.label ?? ""),
-        };
-    });
+    let dirty = false;
+    const flush = setInterval(() => {
+      if (dirty) {
+        items = [...buf];
+        dirty = false;
+      }
+    }, 200);
+    try {
+      await request({ op: "scan", mode: mode as any }, (e: SidecarEvent) => {
+        if (e.ev === "started") activeId = String(e.id);
+        if (e.ev === "item") {
+          buf.push(e as unknown as ScanItem);
+          dirty = true;
+        }
+        if (e.ev === "progress")
+          progress = {
+            done: e.done as number,
+            total: e.total as number,
+            label: String(e.label ?? ""),
+          };
+      });
+    } finally {
+      clearInterval(flush);
+    }
     items = buf;
     scanning = false;
     activeId = null;
@@ -136,7 +153,7 @@
             checked={item.selected}
             onchange={() => toggle(item)}
           />
-          <span class="size">{fmt(item.size)}</span>
+          <span class="size">{item.truncated ? "≥ " : ""}{fmt(item.size)}</span>
           {#if item.category}<span class="cat">{item.category}</span>{/if}
           <span class="name">{item.path}</span>
           <button

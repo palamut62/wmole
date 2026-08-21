@@ -63,7 +63,7 @@
           <span class="cpu">{item.cpu?.toFixed(0) ?? 0}%</span>
           <span class="pid">{item.pid}</span>
           <span class="name">{item.name}</span>
-          {#if item.protected}<span class="guard">KORUMALI</span>{/if}
+          {#if item.protected}<span class="guard">{$t("KORUMALI")}</span>{/if}
         </label>
       {/snippet}
     </VirtualList>

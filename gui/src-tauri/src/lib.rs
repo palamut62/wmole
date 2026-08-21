@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -10,6 +11,41 @@ use tauri_plugin_shell::ShellExt;
 mod updater;
 
 struct Sidecar(Mutex<Option<CommandChild>>);
+
+/// Sidecar çıktısı webview'e iletilecek sentetik olay: süreç beklenmedik şekilde öldü.
+const SIDECAR_EXITED: &str =
+    r#"{"id":null,"ev":"error","code":"sidecar_exited","message":"sidecar process exited"}"#;
+
+/// Sidecar stdout'unu NDJSON satırlarına birleştirip webview'e ilet.
+/// Uzun satırlar birden çok okumaya bölünebildiğinden '\n'e kadar tamponlanır;
+/// süreç çıkışında kalan kısmi satır da flush edilir.
+async fn pump_sidecar(handle: &tauri::AppHandle, mut rx: tauri::async_runtime::Receiver<CommandEvent>) {
+    let mut buf = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(pos) = buf.find('\n') {
+                    let line: String = buf.drain(..=pos).collect();
+                    let line = line.trim_end();
+                    if !line.trim().is_empty() {
+                        let _ = handle.emit("sidecar-event", line.to_string());
+                    }
+                }
+            }
+            CommandEvent::Stderr(bytes) => {
+                eprintln!("wmole sidecar stderr: {}", String::from_utf8_lossy(&bytes).trim_end());
+            }
+            CommandEvent::Error(err) => {
+                eprintln!("wmole sidecar error: {err}");
+            }
+            _ => {}
+        }
+    }
+    if !buf.trim().is_empty() {
+        let _ = handle.emit("sidecar-event", buf.trim().to_string());
+    }
+}
 
 #[tauri::command]
 fn send_request(state: State<Sidecar>, line: String) -> Result<(), String> {
@@ -49,22 +85,35 @@ pub fn run() {
         .manage(Sidecar(Mutex::new(None)))
         .setup(|app| {
             // ── Python sidecar ──
-            let sidecar = app.shell().sidecar("wmole").unwrap().args(["serve"]);
-            let (mut rx, child) = sidecar.spawn().expect("failed to spawn sidecar");
-            app.state::<Sidecar>().0.lock().unwrap().replace(child);
-
+            // Süreç beklenmedik şekilde ölürse webview'e bildirilir ve kısa bir
+            // bekleme sonrası en fazla 3 kez yeniden başlatılır (kendini onaran).
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stdout(bytes) = event {
-                        let text = String::from_utf8_lossy(&bytes);
-                        for line in text.lines() {
-                            if line.trim().is_empty() {
-                                continue;
+                const MAX_ATTEMPTS: u32 = 3;
+                let mut attempts: u32 = 0;
+                loop {
+                    let spawned = handle
+                        .shell()
+                        .sidecar("wmole")
+                        .ok()
+                        .and_then(|cmd| cmd.args(["serve"]).spawn().ok());
+                    match spawned {
+                        Some((rx, child)) => {
+                            attempts = 0;
+                            handle.state::<Sidecar>().0.lock().unwrap().replace(child);
+                            pump_sidecar(&handle, rx).await;
+                            handle.state::<Sidecar>().0.lock().unwrap().take();
+                            let _ = handle.emit("sidecar-event", SIDECAR_EXITED.to_string());
+                        }
+                        None => {
+                            attempts += 1;
+                            if attempts >= MAX_ATTEMPTS {
+                                eprintln!("wmole sidecar: giving up after {attempts} failed spawn attempts");
+                                break;
                             }
-                            let _ = handle.emit("sidecar-event", line.to_string());
                         }
                     }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             });
 

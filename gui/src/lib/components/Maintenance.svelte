@@ -4,6 +4,7 @@
   import { toast } from "$lib/toast";
   import { tr } from "$lib/i18n";
   import { t } from "$lib/i18n";
+  import { checkForUpdate } from "$lib/updater";
 
   let busy = $state(false);
   let updateOut = $state("");
@@ -16,7 +17,16 @@
     busy = false;
     const payload: any = done.payload ?? {};
     updateOut = JSON.stringify(payload, null, 2);
-    toast(tr(dryRun ? "Güncelleme kontrolü bitti" : "Güncelleme denendi"), "info");
+    toast(tr("Güncelleme kontrolü bitti"), "info");
+  }
+
+  async function runUpdate() {
+    busy = true;
+    try {
+      await checkForUpdate(false);
+    } finally {
+      busy = false;
+    }
   }
 
   async function doRemove() {
@@ -36,7 +46,7 @@
     <p>{$t("GitHub'daki son sürümü kontrol et veya güncellemeyi uygula.")}</p>
     <div class="row">
       <button onclick={() => checkUpdate(true)} disabled={busy}>{$t("Kontrol Et (dry-run)")}</button>
-      <button onclick={() => checkUpdate(false)} disabled={busy}>{$t("Güncelle")}</button>
+      <button onclick={runUpdate} disabled={busy}>{$t("Güncelle")}</button>
     </div>
   </section>
 

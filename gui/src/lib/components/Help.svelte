@@ -39,6 +39,16 @@
             ["İşlem günlüğü", "Tüm silmeler ~/.wmole/logs/operations.log dosyasına yazılır."],
           ],
         },
+        {
+          title: "Güvenlik Merkezi",
+          items: [
+            ["Secret tarama", "Proje dizinlerinde API anahtarı, token ve şifre gibi sızmış sırları tarar."],
+            ["Supply-chain + SBOM", "Bağımlılık manifest/lockfile'larından yazılım envanteri (SBOM) çıkarır ve tedarik zinciri denetimi yapar."],
+            ["Geri Alma Kasası", "Güvenli silmeler kalıcı olarak silinmeden önce karantinaya alınır; buradan geri yüklenebilir."],
+            ["İmzalı güvenlik günlüğü", "Tüm güvenlik olayları imzalı bir zincir halinde kaydedilir ve bütünlüğü doğrulanabilir."],
+            ["Süreç koruması", "Geliştirici süreçleri (IDE, derleyici vb.) yanlışlıkla kapatılmaya karşı korunur."],
+          ],
+        },
       ],
     },
     en: {
@@ -78,6 +88,16 @@
             ["Operation log", "All deletions are written to ~/.wmole/logs/operations.log."],
           ],
         },
+        {
+          title: "Security Center",
+          items: [
+            ["Secret scanning", "Scans project directories for leaked secrets like API keys, tokens and passwords."],
+            ["Supply-chain + SBOM", "Builds a software bill of materials (SBOM) from dependency manifests/lockfiles and audits the supply chain."],
+            ["Restore Vault", "Safe deletions are quarantined before permanent removal; they can be restored from here."],
+            ["Signed security log", "All security events are recorded in a signed chain whose integrity can be verified."],
+            ["Process protection", "Developer processes (IDE, compiler, etc.) are protected from accidental termination."],
+          ],
+        },
       ],
     },
   };
@@ -100,6 +120,13 @@
       </dl>
     </section>
   {/each}
+  <p class="about">
+    {$lang === "tr" ? "Ürün sahibi: Umut Çelik (palamut62)" : "Product owner: Umut Çelik (palamut62)"}
+    ·
+    <a href="https://x.com/palamut62" target="_blank" rel="noopener noreferrer">X</a>
+    ·
+    <a href="https://github.com/palamut62" target="_blank" rel="noopener noreferrer">GitHub</a>
+  </p>
 </div>
 
 <style>
@@ -112,4 +139,7 @@
   .item { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
   dt { color: #d29922; }
   dd { margin: 0; color: var(--muted); }
+  .about { color: var(--faint); font-size: 12px; margin: 8px 0 0; display: flex; gap: 6px; align-items: center; }
+  .about a { color: var(--muted); text-decoration: none; }
+  .about a:hover { color: var(--fg); text-decoration: underline; }
 </style>

@@ -22,11 +22,21 @@ Set-Location $repoRoot
 $tag = "v$Version"
 Write-Host "==> Releasing wmole $tag" -ForegroundColor Cyan
 
-# --- 1. Bump installer default version ---
-$iss = Join-Path $repoRoot "installer/wmole.iss"
-(Get-Content $iss) `
-  -replace '#define MyAppVersion "[^"]+"', "#define MyAppVersion `"$Version`"" `
-  | Set-Content $iss -Encoding UTF8
+# --- 1. Sürümü tüm bileşenlerde senkronla (AGENTS.md kuralı) ---
+# Sürüm tek yerden girilir; installer + GUI + sidecar birlikte güncellenir.
+function Update-VersionLine([string]$RelPath, [string]$Pattern, [string]$Replacement) {
+  $full = Join-Path $repoRoot $RelPath
+  if (-not (Test-Path $full)) { Write-Warning "version sync: missing $RelPath"; return }
+  $content = [IO.File]::ReadAllText($full)
+  $updated = [regex]::Replace($content, $Pattern, $Replacement)
+  [IO.File]::WriteAllText($full, $updated)   # UTF-8, BOM yok
+  Write-Host "   bumped $RelPath -> $Version"
+}
+Update-VersionLine "installer/wmole.iss"              '#define MyAppVersion "[^"]+"' "#define MyAppVersion `"$Version`""
+Update-VersionLine "gui/package.json"                 '(?m)^(\s*)"version": "[^"]+"' "`$1`"version`": `"$Version`""
+Update-VersionLine "gui/src-tauri/tauri.conf.json"    '(?m)^(\s*)"version": "[^"]+"' "`$1`"version`": `"$Version`""
+Update-VersionLine "gui/src-tauri/Cargo.toml"         '(?m)^version = "[^"]+"'       "version = `"$Version`""
+Update-VersionLine "mole.py"                          '(?m)^__version__ = "[^"]+"'   "__version__ = `"$Version`""
 
 # --- 2. Commit + push ---
 if (-not $SkipPush) {

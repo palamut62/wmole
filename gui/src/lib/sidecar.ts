@@ -40,6 +40,16 @@ listen<string>("sidecar-event", (msg) => {
     connected.set(true);
     return;
   }
+  // Rust tarafı: sidecar süreci beklenmedik şekilde öldü (yeniden başlatma denenecek).
+  if (!e.id && (e as any).code === "sidecar_exited") {
+    connected.set(false);
+    // Bekleyen istekleri kapat ki spinner'lar sonsuza kadar dönmesin.
+    for (const [id, h] of handlers) h({ id, ev: "done", ok: false } as SidecarEvent);
+    handlers.clear();
+    inflight = 0;
+    activity.set({ busy: false, op: "", label: "", done: 0, total: 0 });
+    return;
+  }
   if (e.ev === "progress") {
     activity.update((a) => ({
       ...a,

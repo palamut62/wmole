@@ -290,7 +290,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "footer_less":      "↓ altta {n} öğe daha",
         "title_help":       "Yardım & Özellikler",
         "hint_help":        "[↑/↓] kaydır  ·  [Q]/[Esc] kapat",
-        "help_key":         "H Yardım",
+        "help_key":         "Shift+H Yardım",
     },
     "en": {
         "title_analyze":    "Analyze Disk",
@@ -329,7 +329,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "footer_less":      "↓ {n} more below",
         "title_help":       "Help & Features",
         "hint_help":        "[↑/↓] scroll  ·  [Q]/[Esc] close",
-        "help_key":         "H Help",
+        "help_key":         "Shift+H Help",
     },
 }
 def _detect_system_lang() -> str:
@@ -1152,35 +1152,74 @@ def find_large_files(path: Path, minimum_size: int, on_progress=None) -> List[di
 
 
 def analyze_path(path: Path, large_file_min: int = 1024 ** 3) -> dict:
+    """Dizini TEK os.walk ile analiz et: alt girdi boyutları, toplam ve büyük dosyalar.
+
+    Eski sürüm her alt girdi için ayrı tam ağaç yürüyüşü + toplam + large-file
+    için iki yürüyüş daha yapıyordu (N+2 walk); büyük ağaçlarda katlanarak
+    yavaştı. Artık ağaç bir kez gezilip her dosya kendi üst seviye atasına
+    yazılır. Boş alt dizinler listede kalır (iterdir ile tohumlanır).
+    """
     path = path.expanduser()
-    entries: List[dict] = []
-    if path.is_dir():
-        for child in path.iterdir():
-            count, size = _file_count_and_size(child)
-            entries.append({
-                "name": child.name,
-                "path": str(child),
-                "size": size,
-                "is_dir": child.is_dir(),
-                "total_files": count,
-            })
-    elif path.exists():
-        count, size = _file_count_and_size(path)
-        entries.append({
-            "name": path.name,
+    if path.is_file():
+        try:
+            size, count = path.stat().st_size, 1
+        except OSError:
+            size, count = 0, 0
+        large = [{"name": path.name, "path": str(path), "size": size}] if size >= large_file_min else []
+        return {
             "path": str(path),
-            "size": size,
-            "is_dir": False,
+            "entries": [{"name": path.name, "path": str(path), "size": size,
+                         "is_dir": False, "total_files": count}],
+            "large_files": large,
+            "total_size": size,
             "total_files": count,
-        })
+        }
+    if not path.is_dir():
+        return {"path": str(path), "entries": [], "large_files": [],
+                "total_size": 0, "total_files": 0}
+
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        children = []
+    agg: Dict[str, List[int]] = {c.name: [0, 0] for c in children}  # name -> [count, size]
+    dir_names = {c.name for c in children if c.is_dir()}
+
+    root_str = str(path)
+    total_count = 0
+    total_size = 0
+    large: List[dict] = []
+    for root, _dirs, files in os.walk(path, onerror=lambda e: None):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                sz = os.stat(fp).st_size
+            except OSError:
+                continue
+            total_count += 1
+            total_size += sz
+            if sz >= large_file_min:
+                large.append({"name": name, "path": fp, "size": sz})
+            top = os.path.relpath(fp, root_str).split(os.sep, 1)[0]
+            bucket = agg.setdefault(top, [0, 0])
+            bucket[0] += 1
+            bucket[1] += sz
+
+    entries = [{
+        "name": name,
+        "path": str(path / name),
+        "size": agg[name][1],
+        "is_dir": name in dir_names,
+        "total_files": agg[name][0],
+    } for name in agg]
     entries.sort(key=lambda row: row["size"], reverse=True)
-    total_files, total_size = _file_count_and_size(path)
+    large.sort(key=lambda row: row["size"], reverse=True)
     return {
         "path": str(path),
         "entries": entries,
-        "large_files": find_large_files(path, large_file_min),
+        "large_files": large,
         "total_size": total_size,
-        "total_files": total_files,
+        "total_files": total_count,
     }
 
 
@@ -1916,12 +1955,25 @@ def _run_windows_update_reset(dry_run: bool) -> str:
     if dry_run:
         return "dry-run: would stop wuauserv, clear SoftwareDistribution, restore service state"
     was_running = _is_service_running("wuauserv")
+
+    def _run(cmd: List[str], timeout: int) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=False)
+
+    def _err(r: subprocess.CompletedProcess) -> str:
+        return (r.stderr or r.stdout or "").strip() or f"exit {r.returncode}"
+
     try:
         if was_running:
-            subprocess.run(["net", "stop", "wuauserv"], capture_output=True, text=True, timeout=60, shell=False)
-        subprocess.run(["cmd", "/c", "rmdir /s /q C:\\Windows\\SoftwareDistribution"], capture_output=True, text=True, timeout=120, shell=False)
+            r = _run(["net", "stop", "wuauserv"], 60)
+            if r.returncode != 0:
+                return f"failed: net stop wuauserv: {_err(r)} (admin required?)"
+        r = _run(["cmd", "/c", "rmdir /s /q C:\\Windows\\SoftwareDistribution"], 120)
+        if r.returncode != 0 and Path(r"C:\Windows\SoftwareDistribution").exists():
+            return f"failed: could not remove SoftwareDistribution: {_err(r)}"
         if was_running:
-            subprocess.run(["net", "start", "wuauserv"], capture_output=True, text=True, timeout=60, shell=False)
+            r = _run(["net", "start", "wuauserv"], 60)
+            if r.returncode != 0:
+                return f"failed: could not restart wuauserv: {_err(r)}"
         return "ok: Reset Windows Update"
     except subprocess.TimeoutExpired:
         return "timeout"
@@ -2181,7 +2233,7 @@ def _help_sections_tr() -> List[tuple]:
         ("Otomatik güncelleme", [
             "Her başlatmada GitHub Releases sessizce kontrol edilir (6 saatte 1).",
             "Yeni sürüm varsa installer %TEMP%'e indirilir ve wmole çıkışında",
-            "/VERYSILENT modda kurulur. Bir dahaki açılışta yeni sürümdesiniz.",
+            "Sessiz (/S) modda kurulur. Bir dahaki açılışta yeni sürümdesiniz.",
             "Devre dışı: wmole update --disable-auto  veya  WMOLE_NO_AUTO_UPDATE=1",
         ]),
         ("İpuçları", [
@@ -2261,7 +2313,7 @@ def _help_sections_en() -> List[tuple]:
         ("Auto-update", [
             "Every launch silently checks GitHub Releases (throttled to 6h).",
             "If newer, installer is pre-downloaded to %TEMP% and installed",
-            "with /VERYSILENT when wmole exits. Next run = new version.",
+            "with silent mode (/S) when wmole exits. Next run = new version.",
             "Opt out: wmole update --disable-auto  or  WMOLE_NO_AUTO_UPDATE=1",
         ]),
         ("Tips", [
@@ -4245,19 +4297,35 @@ def _serve_startup_disable(req: dict, emit, cancel) -> None:
         emit({"id": rid, "ev": "done", "ok": False})
 
 
+# Processes listesi için kalıcı psutil.Process örnekleri. cpu_percent() iki
+# ölçüm arasındaki farkı ÖRNEK BAŞINA hesaplar; her istekte yeni örnek yaratılırsa
+# ilk çağrı hep 0.0 döner. Örnekler önbelleklenerek gerçek delta alınır.
+_PROC_CACHE: dict = {}
+
+
 def _serve_processes_list(req: dict, emit, cancel) -> None:
     rid = req.get("id")
     emit({"id": rid, "ev": "started", "total_hint": None})
     procs = []
     if psutil:
-        for p in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]):
+        seen_pids = set()
+        for p in psutil.process_iter(["pid", "name", "memory_info"]):
             try:
-                info = p.info
-                mem = info["memory_info"].rss if info.get("memory_info") else 0
-                procs.append({"pid": info["pid"], "name": info.get("name") or "?",
-                              "mem": mem, "cpu": info.get("cpu_percent") or 0.0})
+                pid = p.info["pid"]
+                seen_pids.add(pid)
+                cached = _PROC_CACHE.get(pid)
+                if cached is None:
+                    cached = psutil.Process(pid)
+                    cached.cpu_percent(interval=None)  # sıfır noktası; bu turda 0.0 görünür
+                    _PROC_CACHE[pid] = cached
+                mem = p.info["memory_info"].rss if p.info.get("memory_info") else 0
+                procs.append({"pid": pid, "name": p.info.get("name") or "?",
+                              "mem": mem, "cpu": cached.cpu_percent(interval=None) or 0.0})
             except Exception:
                 continue
+        # Ölü süreçlerin önbellek girdilerini temizle (uzun oturumlarda büyümesin).
+        for stale in _PROC_CACHE.keys() - seen_pids:
+            _PROC_CACHE.pop(stale, None)
     procs.sort(key=lambda x: x["mem"], reverse=True)
     protected_names = {str(v).lower() for v in load_config().get("protected_processes", [])}
     for p in procs[:300]:
@@ -4585,8 +4653,13 @@ def cmd_serve() -> None:
 
 
 def cli_clean(dry_run: bool, json_out: bool, roots: Optional[List[Path]] = None,
-              whitelist: Optional[List[Path]] = None, use_cache: bool = True) -> None:
-    """Headless: scan, pick the safe_default categories, ask once, delete."""
+              whitelist: Optional[List[Path]] = None, use_cache: bool = True,
+              yes: bool = False) -> None:
+    """Headless: scan, pick the safe_default categories, ask once, delete.
+
+    yes=True skips the interactive confirmation (scheduled tasks / --yes);
+    without a TTY the prompt would raise EOFError, so --yes is required there.
+    """
     wl = whitelist if whitelist is not None else load_whitelist()
     s = Scanner(whitelist=wl, profile="clean", roots=roots, use_cache=use_cache)
     s.run()
@@ -4599,9 +4672,13 @@ def cli_clean(dry_run: bool, json_out: bool, roots: Optional[List[Path]] = None,
         report["json_preview_only"] = True
         print(json.dumps(report, indent=2))
         return
-    print(f"{len(targets)} item(s), {human_size(total)} — {'dry-run' if dry_run else 'delete to Recycle Bin'}? [y/N] ", end="")
-    if input().strip().lower() != "y":
-        print("Cancelled."); return
+    if not yes:
+        print(f"{len(targets)} item(s), {human_size(total)} — {'dry-run' if dry_run else 'delete to Recycle Bin'}? [y/N] ", end="")
+        try:
+            if input().strip().lower() != "y":
+                print("Cancelled."); return
+        except EOFError:
+            print("No TTY: re-run with --yes to auto-confirm."); return
     ok = err = 0
     for t in targets:
         e = delete_path(t.path, use_trash=True, dry_run=dry_run)
@@ -4849,6 +4926,29 @@ def fetch_latest_release(repo: str = GITHUB_REPO, timeout: float = 10.0) -> Opti
         return None
 
 
+def _find_sha256_asset(assets: List[dict], installer_name: str) -> Optional[dict]:
+    """Installer'a ait .sha256 asset'ini bul."""
+    want = f"{installer_name}.sha256".lower()
+    for a in assets:
+        if a.get("name", "").lower() == want:
+            return a
+    return None
+
+
+def _parse_sha256_text(text: str) -> str:
+    """'<hex>  <filename>' bicimli .sha256 iceriginden hash dondurur; gecersizse bos string."""
+    token = text.strip().split()[0].lower() if text.strip() else ""
+    return token if re.fullmatch(r"[0-9a-f]{64}", token) else ""
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _pick_installer_asset(assets: List[dict]) -> Optional[dict]:
     if not assets:
         return None
@@ -4926,9 +5026,9 @@ def _launch_updated(new_path: Path, asset_name: str, latest_tag: str) -> None:
                   f"{__version__} -> {latest_tag}")
 
     if is_installer:
-        # Inno Setup / MSI: run the installer silently
+        # Tauri üretimi NSIS kurulumu: sessiz kurulum bayrağı /S
         subprocess.Popen(
-            [str(new_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            [str(new_path), "/S"],
             creationflags=DETACHED if os.name == "nt" else 0,
             close_fds=True,
         )
@@ -4975,7 +5075,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
     """Self-update.
 
     - Frozen exe (PyInstaller install): check GitHub latest release, download
-      installer, run /VERYSILENT to upgrade in place.
+      installer, run it silently (/S) to upgrade in place.
     - Source checkout: git pull + pip upgrade deps (legacy behavior).
     - quiet=True is used by the TUI to check status without writing behind its
       alternate screen or opening an invisible installation prompt.
@@ -5018,7 +5118,7 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
             steps.append({"step": "download", "code": 0,
                           "output": f"would download {url}"})
             steps.append({"step": "install", "code": 0,
-                          "output": "would run /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"})
+                          "output": "would run silent installer (/S)"})
             return _emit_update(steps, json_out, quiet, sink)
 
         if not yes and not json_out:
@@ -5047,6 +5147,35 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
                 return _emit_update(steps, json_out, quiet, sink)
             steps.append({"step": "download", "code": 0,
                           "output": f"{dest} ({dest.stat().st_size} bytes)"})
+
+            # SHA-256 doğrulaması: release'taki .sha256 asset'iyle karşılaştır.
+            # Rust updater ile aynı semantik: asset varsa zorunlu, yoksa uyarıyla geç.
+            sha_asset = _find_sha256_asset(rel.get("assets", []), name)
+            if sha_asset:
+                try:
+                    sha_tmp = TEMP / f"{name}.sha256"
+                    _download(sha_asset["browser_download_url"], sha_tmp)
+                    expected_hash = _parse_sha256_text(sha_tmp.read_text(encoding="utf-8", errors="replace"))
+                    sha_tmp.unlink(missing_ok=True)
+                except Exception as exc:
+                    steps.append({"step": "verify", "code": 1,
+                                  "output": f"could not fetch .sha256 asset: {exc}"})
+                    dest.unlink(missing_ok=True)
+                    return _emit_update(steps, json_out, quiet, sink)
+                if not expected_hash:
+                    steps.append({"step": "verify", "code": 1, "output": "invalid .sha256 asset content"})
+                    dest.unlink(missing_ok=True)
+                    return _emit_update(steps, json_out, quiet, sink)
+                actual_hash = _file_sha256(dest)
+                if actual_hash != expected_hash:
+                    steps.append({"step": "verify", "code": 1,
+                                  "output": f"sha256 mismatch (expected {expected_hash}, got {actual_hash}); download deleted"})
+                    dest.unlink(missing_ok=True)
+                    return _emit_update(steps, json_out, quiet, sink)
+                steps.append({"step": "verify", "code": 0, "output": f"sha256 ok ({actual_hash[:16]}...)"})
+            else:
+                steps.append({"step": "verify", "code": 1,
+                              "output": "no .sha256 asset in release; skipping hash verification"})
         except Exception as exc:
             steps.append({"step": "download", "code": 1, "output": str(exc)})
             return _emit_update(steps, json_out, quiet, sink)
@@ -5054,8 +5183,9 @@ def cli_update(json_out: bool, yes: bool = False, dry_run: bool = False,
         # Launch installer detached so it can replace our own exe after we exit.
         try:
             DETACHED = 0x00000008  # DETACHED_PROCESS
+            # Tauri üretimi NSIS kurulumu: sessiz bayrak /S
             subprocess.Popen(
-                [str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                [str(dest), "/S"],
                 creationflags=DETACHED if os.name == "nt" else 0,
                 close_fds=True,
             )
@@ -5477,13 +5607,21 @@ def main_cli() -> None:
     p.add_argument("--whitelist", default=str(WHITELIST_FILE), help="whitelist file path")
     p.add_argument("--shell", default="powershell", help="completion shell")
     p.add_argument("--install", action="store_true", help="install completion script under ~/.wmole")
-    p.add_argument("--yes", "-y", action="store_true", help="auto-confirm prompts (e.g. self-update)")
+    p.add_argument("--yes", "-y", action="store_true", help="auto-confirm prompts (clean, optimize, self-update)")
     p.add_argument("--disable-auto", action="store_true", help="update mode: turn off background auto-update")
     p.add_argument("--enable-auto", action="store_true", help="update mode: turn background auto-update back on")
     p.add_argument("--kill", default="", help="ports mode: <port>, <pid>, or 'all'")
     p.add_argument("--all-binds", action="store_true", help="ports mode: include non-localhost listeners")
     p.add_argument("--no-cache", action="store_true", help="bypass size cache for this run")
+    p.add_argument("--version", action="store_true", help="show version and owner info")
     args = p.parse_args()
+
+    if args.version:
+        print(f"wmole {__version__}")
+        print("Urun sahibi: Umut Çelik (palamut62)")
+        print("X: https://x.com/palamut62")
+        print("GitHub: https://github.com/palamut62")
+        return
 
     # Do not start a final background check while the user is disabling it.
     # Other commands preserve the fire-and-forget startup behavior.
@@ -5501,7 +5639,7 @@ def main_cli() -> None:
     elif args.mode == "analyze" and target_paths:
         run_tui(initial_view="analyze", start_path=target_paths[0], use_cache=not args.no_cache)
     elif args.mode == "clean":
-        cli_clean(dry_run=args.dry_run, json_out=args.json_out, roots=target_paths or None, whitelist=whitelist, use_cache=not args.no_cache)
+        cli_clean(dry_run=args.dry_run, json_out=args.json_out, roots=target_paths or None, whitelist=whitelist, use_cache=not args.no_cache, yes=args.yes)
     elif args.mode == "purge":
         roots = target_paths or load_purge_roots() or discover_scan_roots()
         cli_categories(build_purge_categories(roots, whitelist=whitelist),

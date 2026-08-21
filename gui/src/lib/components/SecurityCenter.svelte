@@ -86,22 +86,22 @@
 
 <div class="security">
   <div class="head">
-    <div><h2>{$t("Güvenlik Merkezi")}</h2><p>Git, secret, bağımlılık, süreç, karantina ve denetim korumaları</p></div>
-    <span class:bad={!logValid} class="integrity">{logValid ? "✓ LOG ZİNCİRİ DOĞRULANDI" : "⚠ LOG BÜTÜNLÜĞÜ BOZUK"}</span>
+    <div><h2>{$t("Güvenlik Merkezi")}</h2><p>{$t("Git, secret, bağımlılık, süreç, karantina ve denetim korumaları")}</p></div>
+    <span class:bad={!logValid} class="integrity">{logValid ? $t("✓ LOG ZİNCİRİ DOĞRULANDI") : $t("⚠ LOG BÜTÜNLÜĞÜ BOZUK")}</span>
   </div>
 
   <div class="cards">
-    <section><strong>Git-aware koruma</strong><span>Dirty ve untracked dosyalar silinmeden önce bloklanır.</span></section>
-    <section><strong>Karantina</strong><span>{quarantine.length} öğe, {retentionDays} gün saklama</span></section>
-    <section><strong>Süreç koruması</strong><span>{protectedProcesses.length} geliştirici süreci</span></section>
-    <section><strong>İmzalı günlük</strong><span>{logs.length} son güvenlik olayı</span></section>
+    <section><strong>{$t("Git-aware koruma")}</strong><span>{$t("Dirty ve untracked dosyalar silinmeden önce bloklanır.")}</span></section>
+    <section><strong>{$t("Karantina")}</strong><span>{quarantine.length} {$t("öğe")}, {retentionDays} {$t("gün saklama")}</span></section>
+    <section><strong>{$t("Süreç koruması")}</strong><span>{protectedProcesses.length} {$t("geliştirici süreci")}</span></section>
+    <section><strong>{$t("İmzalı günlük")}</strong><span>{logs.length} {$t("son güvenlik olayı")}</span></section>
   </div>
 
   <section class="panel">
-    <h3>Proje Güvenlik Taraması</h3>
-    <div class="row"><input bind:value={root} placeholder="C:\projeler" /><button onclick={scanSecrets} disabled={loading}>Secret Tara</button><button onclick={auditSupply} disabled={loading}>Supply-chain + SBOM</button></div>
+    <h3>{$t("Proje Güvenlik Taraması")}</h3>
+    <div class="row"><input bind:value={root} placeholder="C:\projeler" /><button onclick={scanSecrets} disabled={loading}>{$t("Secret Tara")}</button><button onclick={auditSupply} disabled={loading}>{$t("Supply-chain + SBOM")}</button></div>
     {#if secrets}
-      <p class="summary">{secrets.scanned} dosya tarandı, <b>{secrets.findings.length}</b> bulgu.</p>
+      <p class="summary">{secrets.scanned} {$t("dosya tarandı,")} <b>{secrets.findings.length}</b> {$t("bulgu.")}</p>
       <div class="results">
         {#each secrets.findings as finding}
           <div class="finding"><b>{finding.type}</b><span>{finding.path}:{finding.line}</span><code>{finding.preview}</code></div>
@@ -109,32 +109,32 @@
       </div>
     {/if}
     {#if supply}
-      <p class="summary">SBOM: {supply.sbom.length} manifest/lockfile, denetim: {supply.audits.length}</p>
+      <p class="summary">{$t("SBOM:")} {supply.sbom.length} {$t("manifest/lockfile, denetim:")} {supply.audits.length}</p>
       <div class="results">
         {#each supply.audits as audit}
-          <details class:danger={audit.status === "findings"}><summary>{audit.tool} - {audit.status} - {audit.project}</summary><pre>{audit.output || "Çıktı yok"}</pre></details>
+          <details class:danger={audit.status === "findings"}><summary>{audit.tool} - {audit.status} - {audit.project}</summary><pre>{audit.output || $t("Çıktı yok")}</pre></details>
         {/each}
       </div>
     {/if}
   </section>
 
   <section class="panel">
-    <h3>Geri Alma Kasası</h3>
-    {#if !quarantine.length}<p class="muted">Karantinada öğe yok.</p>{/if}
+    <h3>{$t("Geri Alma Kasası")}</h3>
+    {#if !quarantine.length}<p class="muted">{$t("Karantinada öğe yok.")}</p>{/if}
     {#each quarantine as entry}
-      <div class="entry"><div><b>{entry.name}</b><span>{entry.original} · {fmt(entry.size)} · {new Date(entry.created * 1000).toLocaleString()}</span></div><button onclick={() => restore(entry.id)}>Geri Yükle</button></div>
+      <div class="entry"><div><b>{entry.name}</b><span>{entry.original} · {fmt(entry.size)} · {new Date(entry.created * 1000).toLocaleString()}</span></div><button onclick={() => restore(entry.id)}>{$t("Geri Yükle")}</button></div>
     {/each}
   </section>
 
   <section class="panel">
-    <h3>Koruma Politikası</h3>
-    <div class="row"><label><input type="checkbox" bind:checked={quarantineEnabled} /> Güvenli silmeleri karantinaya al</label><label>Saklama günü <input class="small" type="number" min="1" bind:value={retentionDays} /></label></div>
+    <h3>{$t("Koruma Politikası")}</h3>
+    <div class="row"><label><input type="checkbox" bind:checked={quarantineEnabled} /> {$t("Güvenli silmeleri karantinaya al")}</label><label>{$t("Saklama günü")} <input class="small" type="number" min="1" bind:value={retentionDays} /></label></div>
     <div class="chips">{#each protectedProcesses as name, i}<span>{name}<button onclick={() => protectedProcesses = protectedProcesses.filter((_, x) => x !== i)}>×</button></span>{/each}</div>
-    <div class="row"><input bind:value={newProcess} placeholder="ör. idea64.exe" onkeydown={(e) => e.key === "Enter" && addProcess()} /><button onclick={addProcess}>Süreç Ekle</button><button class="primary" onclick={saveProtection}>Kaydet</button></div>
+    <div class="row"><input bind:value={newProcess} placeholder="ör. idea64.exe" onkeydown={(e) => e.key === "Enter" && addProcess()} /><button onclick={addProcess}>{$t("Süreç Ekle")}</button><button class="primary" onclick={saveProtection}>{$t("Kaydet")}</button></div>
   </section>
 
   <section class="panel">
-    <h3>Güvenlik Günlüğü</h3>
+    <h3>{$t("Güvenlik Günlüğü")}</h3>
     <div class="results log">{#each logs as item}<div class="event"><time>{item.timestamp}</time><b>{item.event}</b><span>{JSON.stringify(item.details)}</span></div>{/each}</div>
   </section>
 </div>

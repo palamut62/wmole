@@ -31,7 +31,8 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 12. [Uninstall and Leftovers](#uninstall-and-leftovers)
 13. [Command Input And Context Keys](#command-input-and-context-keys)
 14. [Testing](#testing)
-15. [Roadmap](#roadmap)
+15. [Benchmarks](#benchmarks)
+16. [Roadmap](#roadmap)
 
 ## Features
 
@@ -43,6 +44,14 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 - Optimize mode with dry-run support, admin/high-risk labeling, and high-risk confirmation.
 - Rich status dashboard and JSON status output with device/power/uptime/network/disk stats.
 - Persistent `/` command input for operation-first TUI navigation.
+- Per-item explanation cards: every candidate answers what it is, what is lost, what is kept, how to rebuild it, when the space actually comes back, and whether it can be undone.
+- Per-item risk score (0-100) with every contributing modifier listed, so the number is always explainable.
+- Real on-disk accounting: cluster rounding, sparse files, and NTFS compression, instead of raw `st_size`.
+- Cloud placeholder detection (OneDrive/Dropbox): online-only files are counted separately and marked as freeing no space.
+- Quarantine integrity: a BLAKE3 digest is taken at delete time and verified on restore; a mismatch refuses the restore.
+- Crash-safe operation journal (SQLite WAL): intent is recorded before the filesystem is touched, and reconciled on the next start.
+- Handle-addressed deletion: the target is opened once, guards run against the handle's resolved path, and the delete is issued through that handle.
+- Reproducible benchmark harness (`wmole bench`) for scan and delete throughput.
 
 ## Command Set
 
@@ -64,6 +73,9 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
 | `wmole doctor [--json]` | Dev machine health report (PATH, toolchain, caches, disk, `~/.wmole`). |
 | `wmole undo [<id>] [--json]` | List quarantined deletions or restore one by id. |
 | `wmole hook install [--force]` / `wmole hook uninstall` | Manage the secret-scanning git pre-commit hook. |
+| `wmole explain <path>... [--json]` | Explanation card + risk score breakdown for each path. |
+| `wmole verify [--json]` | Reconcile the operation journal and verify quarantine integrity. |
+| `wmole bench [--json] [--dirs N] [--files-per-dir N]` | Measure scan and delete throughput on a synthetic tree. |
 
 ## Analyze Explorer
 
@@ -88,6 +100,58 @@ Windows-first port of [tw93/Mole](https://github.com/tw93/Mole): a terminal main
   - entries in `~/.wmole/denylist.txt`
 - Whitelist exceptions from `~/.wmole/whitelist.txt`.
 - Operation log at `~/.wmole/logs/operations.log`.
+
+### Handle-addressed deletion
+
+Checking a path and then deleting it *by name* leaves a window in which the
+name can be repointed at something else. On Windows wmole instead opens the
+target once, reads the path that handle actually resolves to, runs the
+protected-path / whitelist / git-dirty guards against **that** path, and issues
+the delete through the same handle. The name is never used to address the
+object a second time. Directories are emptied child-by-child through their own
+handles while the root handle stays open, so the root cannot be swapped
+mid-operation.
+
+### Quarantine integrity
+
+Safe deletes move content into `~/.wmole/quarantine`. A BLAKE3 digest (blake2b
+when the optional `blake3` package is absent) is computed **before** the move
+and re-checked on restore. If the quarantined content no longer matches, the
+restore is refused rather than silently handing back altered data. For a
+directory the digest covers each file's relative path and size as well as its
+bytes, so a missing or renamed file is caught too. Content above
+`DIGEST_BUDGET_BYTES` is hashed head-and-tail and the entry is marked partial.
+
+Run `wmole verify` to re-check every vault entry on demand.
+
+### Crash-safe journal
+
+Destructive operations record their intent in a SQLite WAL journal
+(`~/.wmole/journal.db`, `synchronous=FULL`) before the filesystem is touched.
+If the process is killed mid-operation, the next start reconciles every open
+row against reality:
+
+| Situation | Verdict |
+|---|---|
+| Original intact, nothing in quarantine | `void` — the move never started |
+| Original gone, content in quarantine | `reattached` — the index is repaired |
+| Content in both places | `duplicated` — flagged for manual resolution |
+| Neither found | `unaccounted` — flagged, never guessed |
+
+### What "freed space" means
+
+`st_size` is a file's *logical* length, which is not what a delete reclaims.
+Before a confirmation dialog is shown, wmole measures the selection's actually
+allocated bytes, accounting for:
+
+- cluster rounding (a 1-byte file occupies a whole allocation unit)
+- sparse files
+- NTFS compression
+- cloud placeholders — OneDrive/Dropbox online-only files report their full
+  cloud length but occupy ~0 bytes locally
+
+Placeholders are counted and reported separately, labelled as freeing no space,
+so a synced folder can no longer inflate the estimate.
 
 ## What Gets Scanned
 
@@ -226,6 +290,30 @@ Context keys: Up/Down move | Enter open/run | Space pick | D delete | K permanen
 py -m py_compile mole.py
 py -m unittest discover -s tests
 ```
+
+## Benchmarks
+
+Throughput numbers are only useful if you can reproduce them, so the harness
+ships with the tool. It builds a synthetic tree under `%TEMP%`, times the scan
+and the delete separately (build time excluded from both), and removes the tree
+afterwards.
+
+```cmd
+py mole.py bench --json
+py mole.py bench --dirs 300 --files-per-dir 60
+```
+
+Reference run — 18,000 files x 4 KB, Windows 11, 16 logical cores, NVMe:
+
+| Phase | Throughput |
+|---|---|
+| Scan (walk + logical/on-disk sizing) | ~72,000 items/sec |
+| Parallel directory sizing (32 workers) | ~1,200 dirs/sec |
+| Delete (handle-addressed, permanent) | ~1,300 items/sec |
+
+Delete throughput is dominated by per-object Windows API calls, not by wmole:
+each file costs an open, a disposition-set and a close. Your numbers will
+differ with hardware and, notably, with real-time antivirus scanning.
 
 ## Roadmap
 

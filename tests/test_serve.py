@@ -231,3 +231,69 @@ class ServeFeatureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServeDetailOpsTest(unittest.TestCase):
+    """The GUI's detail panel, freed-space estimate and vault checks."""
+
+    def test_explain_returns_a_card_and_a_scored_risk(self):
+        events, err = _run_serve([{
+            "id": "x1", "op": "explain",
+            "items": [{"path": r"C:\x\npm-cache", "kind": "npm-cache"},
+                      {"path": r"C:\x\photos", "kind": ""}],
+            "risk": True, "check_git": False,
+        }])
+        done = [e for e in events if e["id"] == "x1" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        rows = done[0]["payload"]["items"]
+        self.assertEqual(len(rows), 2)
+        cache, data = rows
+        for key in ("what", "lost", "kept", "rebuild", "when_freed", "reversible"):
+            self.assertIn(key, cache["explain"])
+        self.assertTrue(cache["explain"]["regenerable"])
+        self.assertFalse(data["explain"]["regenerable"])
+        # Every score is the sum of its listed modifiers, so it is explainable.
+        for row in rows:
+            self.assertEqual(
+                row["risk"]["score"],
+                max(0, min(100, sum(m["points"] for m in row["risk"]["modifiers"]))))
+        self.assertLess(cache["risk"]["score"], data["risk"]["score"])
+
+    def test_disk_facts_reports_allocated_bytes_next_to_logical(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "tiny.txt").write_bytes(b"x")
+            events, err = _run_serve([{"id": "d1", "op": "disk_facts",
+                                       "paths": [str(root)]}])
+        done = [e for e in events if e["id"] == "d1" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        total = done[0]["payload"]["total"]
+        self.assertEqual(total["logical"], 1)
+        self.assertEqual(total["files"], 1)
+        # A 1-byte file still occupies a whole allocation unit.
+        self.assertGreaterEqual(total["on_disk"], total["logical"])
+        self.assertEqual(total["placeholder_files"], 0)
+
+    def test_journal_lists_open_work_and_recovers_it(self):
+        events, err = _run_serve([{"id": "j1", "op": "journal"},
+                                  {"id": "j2", "op": "journal", "recover": True}])
+        listed = [e for e in events if e["id"] == "j1" and e["ev"] == "done"]
+        recovered = [e for e in events if e["id"] == "j2" and e["ev"] == "done"]
+        self.assertTrue(listed and recovered, msg=err)
+        self.assertIn("open", listed[0]["payload"])
+        self.assertIn("recovered", recovered[0]["payload"])
+
+    def test_ready_event_reports_what_recovery_reconciled(self):
+        events, err = _run_serve([{"id": "p1", "op": "ping"}])
+        ready = [e for e in events if e["ev"] == "ready"]
+        self.assertTrue(ready, msg=err)
+        # Startup reconciliation runs before the UI can queue new deletes.
+        self.assertIsInstance(ready[0].get("recovered"), list)
+
+    def test_quarantine_verify_returns_a_verdict_per_entry(self):
+        events, err = _run_serve([{"id": "q1", "op": "quarantine_verify"}])
+        done = [e for e in events if e["id"] == "q1" and e["ev"] == "done"]
+        self.assertTrue(done, msg=err)
+        for row in done[0]["payload"]["entries"]:
+            self.assertIn("ok", row)
+            self.assertIn("problem", row)

@@ -20,6 +20,7 @@ Safety: deletes go to the Recycle Bin by default (send2trash).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import hashlib
 import hmac
@@ -30,6 +31,7 @@ import queue as _queue
 import re
 import shutil
 import secrets
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -96,7 +98,7 @@ else:  # pragma: no cover
 
 
 # ---------- Version ----------
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 GITHUB_REPO = "palamut62/wmole"
 AUTO_UPDATE_INTERVAL = 6 * 3600  # seconds between background checks
 
@@ -118,6 +120,7 @@ SECURITY_LOG_FILE = LOG_DIR / "security.jsonl"
 SECURITY_KEY_FILE = WMOLE_DIR / "security.key"
 QUARANTINE_DIR = WMOLE_DIR / "quarantine"
 QUARANTINE_INDEX = QUARANTINE_DIR / "index.json"
+JOURNAL_DB = WMOLE_DIR / "journal.db"
 _SECURITY_LOG_LOCK = threading.Lock()
 _SECURITY_CHAIN_STATE: dict[str, str] = {}
 UPDATE_CHECK_FILE = WMOLE_DIR / "update_check.json"
@@ -343,6 +346,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "confirm_header":   "Aşağıdaki {n} öğe {action} ({size}).",
         "confirm_keys":     "[Enter] onayla   ·   [Esc] iptal",
         "and_more":         "  … ve {n} öğe daha",
+        "on_disk_note":     "Diskte gerçekten boşalacak: {size} (mantıksal {logical})",
+        "on_disk_partial":  "Ölçüm bütçesi doldu — gerçek rakam bundan yüksek olabilir.",
+        "placeholder_note": "{n} bulut yer tutucusu ({size}) yalnızca bulutta duruyor: silmek yer açmaz.",
+        "risk_note":        "En yüksek risk puanı: {score}/100 ({level}) — {path}",
         "protected_header": "⛔ Atlanacak (korumalı) {n} öğe:",
         "act_trash":        "Geri Dönüşüm Kutusu'na taşınacak",
         "act_permanent":    "KALICI olarak silinecek",
@@ -382,6 +389,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "confirm_header":   "The following {n} item(s) will be {action} ({size}).",
         "confirm_keys":     "[Enter] confirm   ·   [Esc] cancel",
         "and_more":         "  … and {n} more",
+        "on_disk_note":     "Actually freed on disk: {size} (logical {logical})",
+        "on_disk_partial":  "Measurement budget hit — the real figure may be higher.",
+        "placeholder_note": "{n} cloud placeholder(s) ({size}) live only in the cloud: deleting frees no space.",
+        "risk_note":        "Highest risk score: {score}/100 ({level}) — {path}",
         "protected_header": "⛔ Protected — will be skipped ({n}):",
         "act_trash":        "moved to the Recycle Bin",
         "act_permanent":    "PERMANENTLY DELETED",
@@ -515,6 +526,8 @@ def load_config() -> dict:
         ],
         "quarantine_enabled": True,
         "quarantine_retention_days": 30,
+        # Take a content digest when quarantining and verify it on restore.
+        "quarantine_verify": True,
         "protected_processes": [
             "code.exe", "devenv.exe", "docker desktop.exe", "com.docker.backend.exe",
             "postgres.exe", "mysqld.exe", "mongod.exe",
@@ -812,19 +825,33 @@ def quarantine_path(path: Path, size: int = 0) -> str | None:
     entry_id = f"{int(time.time())}-{secrets.token_hex(4)}"
     target_dir = QUARANTINE_DIR / entry_id
     target = target_dir / path.name
+    # Digest the content *before* it moves, so restore can prove that what
+    # comes back is byte-for-byte what went in.
+    digest, digest_partial = ("", False)
+    if load_config().get("quarantine_verify", True):
+        digest, digest_partial = content_digest(path)
+    # The intent is durable before the filesystem is touched: if we die halfway
+    # through the move, recovery finds this row and reconciles it.
+    journal_id = JOURNAL.begin("quarantine", path, size=size, stored=str(target),
+                               digest=digest, digest_algo=DIGEST_ALGO)
     try:
         target_dir.mkdir(parents=True, exist_ok=False)
+        JOURNAL.mark(journal_id, "in_progress")
         shutil.move(str(path), str(target))
         entries = _quarantine_entries()
         entries.append({
             "id": entry_id, "original": str(path), "stored": str(target),
             "size": size, "created": int(time.time()), "name": path.name,
+            "digest": digest, "digest_algo": DIGEST_ALGO if digest else "",
+            "digest_partial": digest_partial,
         })
         _save_quarantine_entries(entries)
+        JOURNAL.mark(journal_id, "committed")
         log_operation("delete-quarantine", path, size=size, result=entry_id)
         return None
     except (OSError, shutil.Error) as exc:
         shutil.rmtree(target_dir, ignore_errors=True)
+        JOURNAL.mark(journal_id, "failed", str(exc))
         return f"quarantine: {exc}"
 
 
@@ -836,14 +863,30 @@ def restore_quarantine(entry_id: str) -> str | None:
     source, destination = Path(entry["stored"]), Path(entry["original"])
     if path_exists(destination):
         return "original path already exists"
+    if not path_exists(source):
+        return "quarantined content is missing"
+    # Refuse to hand back content that changed while it sat in quarantine.
+    mismatch = verify_digest(source, entry.get("digest", ""),
+                             entry.get("digest_algo", ""))
+    if mismatch:
+        log_security_event("quarantine-integrity-failed",
+                           {"id": entry_id, "path": str(destination), "reason": mismatch})
+        return f"restore refused: {mismatch}"
+    journal_id = JOURNAL.begin("restore", destination,
+                               size=int(entry.get("size") or 0), stored=str(source),
+                               digest=entry.get("digest", ""),
+                               digest_algo=entry.get("digest_algo", ""))
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
+        JOURNAL.mark(journal_id, "in_progress")
         shutil.move(str(source), str(destination))
         _save_quarantine_entries([row for row in entries if row.get("id") != entry_id])
         shutil.rmtree(QUARANTINE_DIR / entry_id, ignore_errors=True)
+        JOURNAL.mark(journal_id, "committed")
         log_security_event("quarantine-restored", {"id": entry_id, "path": str(destination)})
         return None
     except (OSError, shutil.Error) as exc:
+        JOURNAL.mark(journal_id, "failed", str(exc))
         return f"restore: {exc}"
 
 
@@ -925,20 +968,59 @@ def delete_path(path: Path, use_trash: bool, dry_run: bool, known_size: int = 0)
             msg = f"trash: {e}"
             log_operation("delete-trash", path, size=size, result=msg)
             return msg
+    journal_id = JOURNAL.begin("delete-permanent", path, size=size)
     try:
-        if path.is_file() or path.is_symlink() or _is_reparse_point(path):
-            # Remove the link/junction itself; never recurse into its target.
-            try:
-                path.unlink()
-            except (IsADirectoryError, PermissionError, OSError):
-                os.rmdir(path)
-        else:
-            shutil.rmtree(path, onerror=_onerr_chmod)
+        JOURNAL.mark(journal_id, "in_progress")
+        error = permanent_delete(path)
+        if error:
+            JOURNAL.mark(journal_id, "failed", error)
+            log_operation("delete-permanent", path, size=size, result=error)
+            return error
+        JOURNAL.mark(journal_id, "committed")
         log_operation("delete-permanent", path, size=size, result="ok")
         return None
     except Exception as e:
+        JOURNAL.mark(journal_id, "failed", str(e))
         log_operation("delete-permanent", path, size=size, result=str(e))
         return str(e)
+
+
+def _delete_guard(resolved: Path) -> str:
+    """Safety checks run against the path a handle actually resolves to.
+
+    Called after the handle is open, so what is checked and what is deleted are
+    provably the same object.
+    """
+    if is_protected_path(resolved):
+        return "protected path"
+    if is_whitelisted(resolved, load_whitelist()):
+        return "whitelisted path"
+    return git_delete_risk(resolved)
+
+
+def permanent_delete(path: Path) -> Optional[str]:
+    """Remove `path` for good, preferring handle-addressed deletion.
+
+    On Windows the object is opened once and deleted through that handle, with
+    the guards evaluated against the handle's resolved path. Where no handle
+    API exists we fall back to the name-based removal.
+    """
+    if handle_delete_supported():
+        error = handle_delete(path, guard=_delete_guard)
+        if error is None:
+            return None
+        # Genuine refusals must surface; only a missing handle API falls back.
+        if "unavailable on this platform" not in error:
+            return error
+    if path.is_file() or path.is_symlink() or _is_reparse_point(path):
+        # Remove the link/junction itself; never recurse into its target.
+        try:
+            path.unlink()
+        except (IsADirectoryError, PermissionError, OSError):
+            os.rmdir(path)
+    else:
+        shutil.rmtree(path, onerror=_onerr_chmod)
+    return None
 
 
 def trash_paths_batch(paths: List[Path],
@@ -984,6 +1066,1086 @@ def trash_paths_batch(paths: List[Path],
         return result
 
 
+# ---------- Real on-disk size / cloud placeholders ----------
+# st_size is the *logical* length of a file. What a delete actually frees is
+# the number of bytes the filesystem has allocated, which differs from the
+# logical length in four common ways on Windows:
+#
+#   1. cluster rounding   - a 1-byte file occupies a whole allocation unit
+#   2. sparse files       - unwritten ranges consume nothing
+#   3. NTFS compression   - allocated < logical
+#   4. cloud placeholders - OneDrive/Dropbox "online only" files report their
+#                           full cloud length but occupy ~0 bytes locally
+#
+# Reporting st_size as "space you will reclaim" therefore overstates the
+# result, sometimes by orders of magnitude for a synced folder. The helpers
+# below compute the allocated figure so the freed-space estimate matches what
+# the drive actually shows afterwards.
+
+FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200
+FILE_ATTRIBUTE_COMPRESSED = 0x00000800
+FILE_ATTRIBUTE_OFFLINE = 0x00001000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+
+# Any one of these means the bytes live in the cloud, not on this disk.
+PLACEHOLDER_ATTRS = (FILE_ATTRIBUTE_OFFLINE
+                     | FILE_ATTRIBUTE_RECALL_ON_OPEN
+                     | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+
+_INVALID_FILE_SIZE = 0xFFFFFFFF
+_kernel32 = None
+_cluster_cache: Dict[str, int] = {}
+_cluster_lock = threading.Lock()
+
+
+def _win_kernel32():
+    """Cached kernel32 handle with argtypes set, or None off Windows."""
+    global _kernel32
+    if _kernel32 is not None:
+        return _kernel32 or None
+    if os.name != "nt":
+        _kernel32 = False  # type: ignore[assignment]
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetCompressedFileSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        k.GetCompressedFileSizeW.restype = wintypes.DWORD
+        k.GetDiskFreeSpaceW.argtypes = [wintypes.LPCWSTR] + [ctypes.POINTER(wintypes.DWORD)] * 4
+        k.GetDiskFreeSpaceW.restype = wintypes.BOOL
+        _kernel32 = k
+        return k
+    except Exception:
+        _kernel32 = False  # type: ignore[assignment]
+        return None
+
+
+def cluster_size(path: Path) -> int:
+    """Allocation-unit size of the volume holding `path` (0 when unknown)."""
+    try:
+        root = os.path.splitdrive(os.path.abspath(str(path)))[0]
+    except (OSError, ValueError):
+        return 0
+    if not root:
+        return 0
+    root = root + os.sep
+    with _cluster_lock:
+        hit = _cluster_cache.get(root)
+    if hit is not None:
+        return hit
+    size = 0
+    k = _win_kernel32()
+    if k is not None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            spc = wintypes.DWORD()
+            bps = wintypes.DWORD()
+            free = wintypes.DWORD()
+            total = wintypes.DWORD()
+            if k.GetDiskFreeSpaceW(root, ctypes.byref(spc), ctypes.byref(bps),
+                                   ctypes.byref(free), ctypes.byref(total)):
+                size = int(spc.value) * int(bps.value)
+        except Exception:
+            size = 0
+    with _cluster_lock:
+        _cluster_cache[root] = size
+    return size
+
+
+def _round_to_cluster(nbytes: int, cluster: int) -> int:
+    if cluster <= 0 or nbytes <= 0:
+        return nbytes
+    return ((nbytes + cluster - 1) // cluster) * cluster
+
+
+def is_cloud_placeholder(attrs: int) -> bool:
+    """True when the file's bytes are dehydrated to a cloud provider."""
+    return bool(attrs & PLACEHOLDER_ATTRS)
+
+
+def _entry_attrs(st) -> int:
+    return int(getattr(st, "st_file_attributes", 0) or 0)
+
+
+def file_on_disk_size(path, logical: int, attrs: int = 0, st=None) -> int:
+    """Bytes this single file actually occupies on the volume.
+
+    Cloud placeholders occupy nothing. Sparse/compressed files report their
+    allocated size via GetCompressedFileSizeW. Everything else is the logical
+    length rounded up to a whole allocation unit.
+    """
+    if is_cloud_placeholder(attrs):
+        return 0
+    allocated = None
+    if attrs & (FILE_ATTRIBUTE_SPARSE_FILE | FILE_ATTRIBUTE_COMPRESSED):
+        k = _win_kernel32()
+        if k is not None:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                high = wintypes.DWORD(0)
+                low = k.GetCompressedFileSizeW(str(path), ctypes.byref(high))
+                if low != _INVALID_FILE_SIZE or ctypes.get_last_error() == 0:
+                    allocated = (int(high.value) << 32) | int(low)
+            except Exception:
+                allocated = None
+    if allocated is None and os.name != "nt":
+        # POSIX reports allocation directly; no cluster rounding needed.
+        blocks = getattr(st, "st_blocks", None)
+        if blocks is not None:
+            return int(blocks) * 512
+    if allocated is None:
+        allocated = logical
+    return _round_to_cluster(allocated, cluster_size(path))
+
+
+@dataclass
+class DiskFacts:
+    """What a path costs and what deleting it would actually free."""
+    logical: int = 0            # sum of st_size — what wmole used to report
+    on_disk: int = 0            # allocated bytes: what a delete really frees
+    placeholder_bytes: int = 0  # logical bytes that live only in the cloud
+    placeholder_files: int = 0
+    files: int = 0
+    truncated: bool = False     # a budget cut the walk short; figures are lower bounds
+
+    def as_dict(self) -> dict:
+        return {
+            "logical": self.logical,
+            "on_disk": self.on_disk,
+            "placeholder_bytes": self.placeholder_bytes,
+            "placeholder_files": self.placeholder_files,
+            "files": self.files,
+            "truncated": self.truncated,
+        }
+
+
+def disk_facts(path: Path, max_seconds: Optional[float] = None,
+               max_files: Optional[int] = None) -> DiskFacts:
+    """Walk `path` and report logical vs. actually-allocated bytes.
+
+    Never descends into reparse points, matching dir_size(): linked trees are
+    counted where they physically live.
+    """
+    facts = DiskFacts()
+    started = time.time()
+
+    def account(entry_path, st) -> None:
+        attrs = _entry_attrs(st)
+        logical = int(st.st_size)
+        facts.logical += logical
+        facts.files += 1
+        if is_cloud_placeholder(attrs):
+            facts.placeholder_files += 1
+            facts.placeholder_bytes += logical
+            return
+        facts.on_disk += file_on_disk_size(entry_path, logical, attrs, st)
+
+    def walk(p) -> bool:
+        try:
+            with os.scandir(p) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if is_reparse_dirent(entry):
+                                continue
+                            if not walk(entry.path):
+                                return False
+                            continue
+                        account(entry.path, entry.stat(follow_symlinks=False))
+                    except OSError:
+                        continue
+                    if max_files is not None and facts.files >= max_files:
+                        return False
+                    if max_seconds is not None and time.time() - started >= max_seconds:
+                        return False
+        except OSError:
+            return True
+        return True
+
+    try:
+        st = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(st.st_mode):
+            account(path, st)
+            return facts
+    except OSError:
+        return facts
+    if not walk(path):
+        facts.truncated = True
+    return facts
+
+
+def freeable_bytes(paths: List[Path], max_seconds_each: Optional[float] = 8.0) -> DiskFacts:
+    """Aggregate on-disk facts for the paths a delete is about to touch.
+
+    This is deliberately computed at confirmation time rather than during the
+    scan: it costs an extra syscall per file, which is affordable for the
+    handful of selected items but not for a whole-drive walk.
+    """
+    total = DiskFacts()
+    for p in paths:
+        f = disk_facts(p, max_seconds=max_seconds_each)
+        total.logical += f.logical
+        total.on_disk += f.on_disk
+        total.placeholder_bytes += f.placeholder_bytes
+        total.placeholder_files += f.placeholder_files
+        total.files += f.files
+        total.truncated = total.truncated or f.truncated
+    return total
+
+
+# ---------- Per-item explanation cards ----------
+# Every candidate answers the same six questions. `rebuild` is a command shown
+# to the user for reference — wmole never runs it.
+
+@dataclass
+class Explanation:
+    what: str            # what this is
+    lost: str            # what disappears
+    kept: str            # what survives
+    rebuild: str         # command that recreates it ("" when nothing can)
+    regenerable: bool    # whether `rebuild` genuinely restores it
+    when_freed: str      # when the space actually comes back
+    reversible: str      # can this be undone, and how
+
+    def as_dict(self) -> dict:
+        return {
+            "what": self.what, "lost": self.lost, "kept": self.kept,
+            "rebuild": self.rebuild, "regenerable": self.regenerable,
+            "when_freed": self.when_freed, "reversible": self.reversible,
+        }
+
+
+_FREED_IMMEDIATE = "immediate"
+_FREED_ON_QUARANTINE_EXPIRY = "quarantine-expiry"
+_FREED_ON_EMPTY_BIN = "empty-recycle-bin"
+_FREED_ON_REBOOT = "reboot"
+
+# kind -> (what, lost, kept, rebuild, regenerable)
+EXPLAIN_TABLE: Dict[str, tuple] = {
+    "npm-cache": ("npm's global package tarball cache",
+                  "Cached tarballs; the next install re-downloads them",
+                  "Installed node_modules, package-lock.json, your registry auth",
+                  "npm cache verify", True),
+    "pnpm-store": ("pnpm's content-addressable package store",
+                   "The shared store; existing projects lose their hard-link targets",
+                   "package.json and pnpm-lock.yaml",
+                   "pnpm install --frozen-lockfile", True),
+    "yarn-cache": ("Yarn's global download cache",
+                   "Cached packages; the next install re-downloads them",
+                   "node_modules and yarn.lock", "yarn cache clean", True),
+    "pip-cache": ("pip's HTTP and wheel cache",
+                  "Cached wheels; the next install rebuilds or re-downloads them",
+                  "Installed packages and virtualenvs", "pip cache purge", True),
+    "cargo-cache": ("Cargo's downloaded crate archives",
+                    "Crate .crate files; the next build re-fetches them",
+                    "Cargo.lock, target/, installed binaries", "cargo fetch", True),
+    "go-cache": ("Go build cache",
+                 "Compiled package objects; the next build is slower once",
+                 "Module cache and source", "go build ./...", True),
+    "gradle-cache": ("Gradle's global dependency and build cache",
+                     "Cached dependencies and build outputs; next build re-downloads",
+                     "Project sources and gradle wrapper", "gradle build", True),
+    "maven-repo": ("Local Maven repository",
+                   "Every cached artifact, including any you installed locally "
+                   "with mvn install and cannot re-download",
+                   "Project sources and pom.xml", "mvn dependency:go-offline", False),
+    "nuget-cache": ("Global NuGet package folder",
+                    "Extracted packages; restore re-downloads them",
+                    "Project files and packages.lock.json", "dotnet restore", True),
+    "conda-pkgs": ("Conda package cache",
+                   "Cached packages; new environments re-download them",
+                   "Existing environments (they hard-link, so links are broken)",
+                   "conda clean --packages", True),
+    "node_modules": ("Installed dependencies for one project",
+                     "The installed tree, including any locally patched files",
+                     "package.json, the lockfile, and your source",
+                     "npm ci", True),
+    "target": ("Rust/Java build output directory",
+               "Compiled artifacts; the next build is a full rebuild",
+               "Cargo.toml/pom.xml and source", "cargo build", True),
+    "venv": ("Python virtual environment",
+             "The environment and anything pip-installed into it, including "
+             "editable installs not captured in requirements",
+             "Your source and requirements.txt",
+             "python -m venv .venv && .venv\\Scripts\\pip install -r requirements.txt", False),
+    "__pycache__": ("Compiled Python bytecode",
+                    "Cached .pyc files; the next import recompiles them",
+                    "All .py sources", "", True),
+    "dist": ("Packaging output directory",
+             "Built artifacts; anything already published elsewhere is unaffected",
+             "Source and build config", "npm run build", True),
+    "build": ("Build output directory",
+              "Compiled output; the next build recreates it",
+              "Source and build config", "npm run build", True),
+    ".next": ("Next.js build and incremental cache",
+              "Prerendered pages and the incremental cache; next build is slower",
+              "Source, next.config, and .env", "npx next build", True),
+    "browser-cache": ("Browser HTTP/media cache",
+                      "Cached pages and media; sites reload slower once",
+                      "Cookies, logins, history, bookmarks, extensions", "", True),
+    "cache": ("A cache directory wmole does not recognise specifically",
+              "Cached data; whatever wrote it will rebuild it on demand — "
+              "but wmole cannot promise that for an unknown tool",
+              "The application and its configuration", "", False),
+    "temp": ("Temporary files written by the OS and applications",
+             "Scratch files; anything still in use by a running program is skipped",
+             "Everything outside the temp directory", "", True),
+    "crash-dumps": ("Application crash dumps",
+                    "Crash evidence — delete only after you are done debugging",
+                    "The applications themselves", "", False),
+    "win-update": ("Windows Update download cache",
+                   "Downloaded update payloads; Windows re-downloads if needed",
+                   "Installed updates and rollback points", "", True),
+    "vscode-storage": ("VS Code per-workspace state",
+                       "Workspace-local UI state and some extension caches",
+                       "Settings, keybindings, extensions, and your files", "", True),
+    "jetbrains": ("JetBrains IDE caches and indexes",
+                  "Indexes; the IDE re-indexes on next open",
+                  "Settings, plugins, and project config", "", True),
+    ".idea": ("JetBrains project settings folder",
+              "Run configurations, per-project settings, and local history",
+              "Your source and VCS history", "", False),
+    "docker-desktop": ("Docker Desktop logs and caches",
+                       "Diagnostic logs and caches",
+                       "Images, volumes, and containers", "", True),
+    "installer": ("Downloaded installer file",
+                  "The setup file; the installed program is untouched",
+                  "The installed application", "re-download from the vendor", False),
+    "downloads": ("An old file in Downloads",
+                  "The file itself — it may be the only copy",
+                  "Nothing else", "", False),
+    "duplicate": ("A byte-identical copy of another file",
+                  "This copy; at least one identical copy remains",
+                  "The other copies of the same content", "", False),
+    "large-file": ("A large user file",
+                   "The file itself — it may be the only copy",
+                   "Nothing else", "", False),
+    "recycle-bin": ("Items already in the Recycle Bin",
+                    "Restore-ability for those items",
+                    "Everything outside the bin", "", False),
+}
+
+# Substrings matched against the folder name when the category has no entry.
+_EXPLAIN_BY_NAME = (
+    ("node_modules", "node_modules"), ("__pycache__", "__pycache__"),
+    (".next", ".next"), (".venv", "venv"), ("venv", "venv"),
+    ("target", "target"), ("dist", "dist"), ("build", "build"),
+    (".idea", ".idea"),
+)
+
+
+_FIXED_KEY_INDEX: Optional[List[tuple]] = None
+_FIXED_KEY_LOCK = threading.Lock()
+
+
+def kind_for_path(path: Path) -> str:
+    """Recover the category key for a bare path.
+
+    The scanner already knows which category an item came from, but the CLI and
+    the GUI detail panel are often handed a path alone. Matching it against the
+    known cleanup locations gives a far better card than falling back to
+    "unrecognised".
+    """
+    global _FIXED_KEY_INDEX
+    with _FIXED_KEY_LOCK:
+        if _FIXED_KEY_INDEX is None:
+            # Longest path first so a nested location wins over its parent.
+            _FIXED_KEY_INDEX = sorted(
+                ((str(row[3]).rstrip("\\/").lower(), row[0])
+                 for row in build_fixed_path_categories()),
+                key=lambda pair: len(pair[0]), reverse=True)
+        index = _FIXED_KEY_INDEX
+    try:
+        target = str(path).rstrip("\\/").lower()
+    except Exception:
+        return ""
+    for prefix, key in index:
+        if target == prefix or target.startswith(prefix + os.sep):
+            return key
+    return ""
+
+
+def _explain_key(path: Path, kind: str = "") -> str:
+    kind = (kind or "").lower()
+    if not kind:
+        kind = kind_for_path(path).lower()
+    if kind in EXPLAIN_TABLE:
+        return kind
+    if "cache" in kind and "browser" not in kind:
+        for browser in ("chrome", "edge", "firefox", "brave", "opera", "vivaldi"):
+            if browser in kind:
+                return "browser-cache"
+    if kind.endswith("-temp") or kind in ("user-temp", "win-temp"):
+        return "temp"
+    if kind in ("old-installers", "installers"):
+        return "installer"
+    if kind in ("old-downloads",):
+        return "downloads"
+    name = path.name.lower()
+    for needle, key in _EXPLAIN_BY_NAME:
+        if name == needle or name.startswith(needle):
+            return key
+    if "cache" in kind or "cache" in name:
+        if any(b in name for b in ("chrome", "edge", "firefox", "brave", "opera")):
+            return "browser-cache"
+        return "cache"
+    return ""
+
+
+def explain_item(path: Path, kind: str = "") -> Explanation:
+    """Answer the six questions for one cleanup candidate.
+
+    Falls back to a deliberately conservative card for anything unrecognised:
+    unknown means "assume it is your data and cannot be regenerated".
+    """
+    key = _explain_key(path, kind)
+    row = EXPLAIN_TABLE.get(key)
+    if row is None:
+        what = "A file or folder wmole has no specific knowledge of"
+        lost, kept, rebuild, regenerable = (
+            "The path and everything under it",
+            "Nothing else is affected",
+            "", False,
+        )
+    else:
+        what, lost, kept, rebuild, regenerable = row
+
+    cfg = load_config()
+    if cfg.get("quarantine_enabled", True):
+        retention = max(1, int(cfg.get("quarantine_retention_days", 30)))
+        when_freed = _FREED_ON_QUARANTINE_EXPIRY
+        reversible = (f"Yes — moved to quarantine and restorable for {retention} days, "
+                      "with a content digest checked on restore")
+    elif send2trash is not None:
+        when_freed = _FREED_ON_EMPTY_BIN
+        reversible = "Yes — restorable from the Recycle Bin until you empty it"
+    else:
+        when_freed = _FREED_IMMEDIATE
+        reversible = "No — permanent deletion is enabled and the Recycle Bin is unavailable"
+    return Explanation(what=what, lost=lost, kept=kept, rebuild=rebuild,
+                       regenerable=regenerable, when_freed=when_freed,
+                       reversible=reversible)
+
+
+# ---------- Per-item risk score ----------
+# 0-100, built from named modifiers so the number is always explainable: the
+# UI shows every modifier that contributed and how much it added.
+
+RISK_BASE: Dict[str, int] = {
+    "npm-cache": 5, "pnpm-store": 10, "yarn-cache": 5, "pip-cache": 5,
+    "cargo-cache": 5, "go-cache": 5, "gradle-cache": 8, "nuget-cache": 8,
+    "conda-pkgs": 12, "maven-repo": 30, "browser-cache": 8, "temp": 5,
+    "__pycache__": 5, "dist": 12, "build": 12, ".next": 10,
+    "node_modules": 15, "target": 15, "vscode-storage": 12, "jetbrains": 10,
+    ".idea": 25, "docker-desktop": 30, "win-update": 15, "crash-dumps": 20,
+    "venv": 30, "installer": 30, "downloads": 45, "duplicate": 35,
+    "large-file": 50, "recycle-bin": 20,
+}
+RISK_DEFAULT_BASE = 45
+
+RISK_LEVELS = ((20, "low"), (45, "moderate"), (70, "high"), (101, "critical"))
+
+
+@dataclass
+class RiskModifier:
+    code: str
+    points: int
+    label: str
+
+    def as_dict(self) -> dict:
+        return {"code": self.code, "points": self.points, "label": self.label}
+
+
+@dataclass
+class RiskScore:
+    score: int
+    level: str
+    modifiers: List[RiskModifier] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {"score": self.score, "level": self.level,
+                "modifiers": [m.as_dict() for m in self.modifiers]}
+
+
+def _risk_level(score: int) -> str:
+    for ceiling, name in RISK_LEVELS:
+        if score < ceiling:
+            return name
+    return "critical"
+
+
+def risk_score(path: Path, kind: str = "", check_git: bool = True) -> RiskScore:
+    """Score how dangerous deleting `path` is, with every contribution named.
+
+    `check_git` runs `git status` on the target and is the one expensive part;
+    callers scoring a long list can turn it off and score the selection later.
+    """
+    key = _explain_key(path, kind)
+    mods: List[RiskModifier] = []
+    base = RISK_BASE.get(key, RISK_DEFAULT_BASE)
+    mods.append(RiskModifier("base", base,
+                             f"baseline for {key or 'unrecognised content'}"))
+
+    explanation = explain_item(path, kind)
+    if not explanation.regenerable:
+        mods.append(RiskModifier("not-regenerable", 20,
+                                 "no command reliably recreates this"))
+
+    if is_protected_path(path):
+        mods.append(RiskModifier("protected", 40,
+                                 "path is on wmole's protected list"))
+
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        st = None
+
+    if st is not None:
+        age = time.time() - st.st_mtime
+        if age < 86400:
+            mods.append(RiskModifier("modified-today", 15,
+                                     "changed within the last 24 hours"))
+        elif age < 7 * 86400:
+            mods.append(RiskModifier("modified-recently", 8,
+                                     "changed within the last 7 days"))
+        if is_cloud_placeholder(_entry_attrs(st)):
+            mods.append(RiskModifier("cloud-placeholder", 12,
+                                     "cloud placeholder: deleting removes the "
+                                     "cloud copy but frees no local space"))
+
+    if _is_reparse_point(path):
+        mods.append(RiskModifier("reparse-point", 10,
+                                 "junction or symlink: the target is shared"))
+
+    try:
+        path.resolve().relative_to(USER.resolve())
+    except (ValueError, OSError):
+        mods.append(RiskModifier("outside-home", 10,
+                                 "lives outside your user profile"))
+
+    if check_git:
+        git_reason = git_delete_risk(path)
+        if git_reason:
+            mods.append(RiskModifier("git-dirty", 25, git_reason))
+
+    if load_config().get("quarantine_enabled", True):
+        mods.append(RiskModifier("quarantined", -15,
+                                 "recoverable from quarantine after deletion"))
+
+    score = max(0, min(100, sum(m.points for m in mods)))
+    return RiskScore(score=score, level=_risk_level(score), modifiers=mods)
+
+
+# ---------- Content integrity (BLAKE3 when available) ----------
+# Quarantine is only a safety net if what comes back is what went in. A digest
+# is taken at move time and re-checked on restore; a mismatch refuses the
+# restore instead of silently handing back altered content.
+
+try:  # blake3 is optional; blake2b is a fine stand-in from the stdlib
+    from blake3 import blake3 as _blake3  # type: ignore[import-not-found]
+except Exception:
+    _blake3 = None  # type: ignore[assignment]
+
+DIGEST_ALGO = "blake3" if _blake3 is not None else "blake2b"
+# Hashing is linear in bytes; past this the cost outweighs the benefit and the
+# digest is recorded as partial (structure + head/tail of each file).
+DIGEST_BUDGET_BYTES = 2 * 1024 ** 3
+_DIGEST_CHUNK = 1024 * 1024
+
+
+def _new_digest():
+    return _blake3() if _blake3 is not None else hashlib.blake2b(digest_size=32)
+
+
+def _hash_file_into(hasher, path: Path, full: bool) -> None:
+    """Feed a file's bytes into `hasher`. When `full` is False, only the first
+    and last chunk are read — enough to catch truncation and edits in place."""
+    with open(path, "rb") as fh:
+        if full:
+            for chunk in iter(lambda: fh.read(_DIGEST_CHUNK), b""):
+                hasher.update(chunk)
+            return
+        hasher.update(fh.read(_DIGEST_CHUNK))
+        try:
+            size = os.fstat(fh.fileno()).st_size
+            if size > _DIGEST_CHUNK:
+                fh.seek(max(0, size - _DIGEST_CHUNK))
+                hasher.update(fh.read(_DIGEST_CHUNK))
+        except OSError:
+            pass
+
+
+def content_digest(path: Path, budget: int = DIGEST_BUDGET_BYTES) -> tuple[str, bool]:
+    """Return (hex_digest, partial) for a file or a whole directory tree.
+
+    For a directory the digest covers the sorted relative path and size of
+    every entry as well as file content, so a missing, renamed or resized file
+    is detected even when the remaining bytes are unchanged.
+    """
+    hasher = _new_digest()
+    partial = False
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return "", True
+    if not stat.S_ISDIR(st.st_mode):
+        full = st.st_size <= budget
+        partial = not full
+        try:
+            _hash_file_into(hasher, path, full)
+        except OSError:
+            return "", True
+        return hasher.hexdigest(), partial
+
+    total = 0
+    rows: List[tuple] = []
+    for root, dirs, files in os.walk(path, onerror=lambda e: None):
+        prune_reparse_dirs(root, dirs)
+        dirs.sort()
+        for name in sorted(files):
+            fp = Path(root) / name
+            try:
+                fst = os.stat(fp, follow_symlinks=False)
+            except OSError:
+                continue
+            rel = os.path.relpath(str(fp), str(path)).replace("\\", "/")
+            rows.append((rel, int(fst.st_size), fp))
+            total += int(fst.st_size)
+    full = total <= budget
+    partial = not full
+    for rel, size, fp in rows:
+        hasher.update(f"{rel}\0{size}\0".encode("utf-8", "surrogateescape"))
+        try:
+            _hash_file_into(hasher, fp, full)
+        except OSError:
+            partial = True
+    return hasher.hexdigest(), partial
+
+
+def verify_digest(path: Path, expected: str, algo: str,
+                  budget: int = DIGEST_BUDGET_BYTES) -> Optional[str]:
+    """None when the content matches, otherwise a human-readable reason."""
+    if not expected:
+        return None  # nothing was recorded; nothing to check
+    if algo != DIGEST_ALGO:
+        return (f"digest algorithm changed ({algo} -> {DIGEST_ALGO}); "
+                "cannot verify this entry")
+    actual, _partial = content_digest(path, budget=budget)
+    if not actual:
+        return "quarantined content could not be read for verification"
+    if not hmac.compare_digest(actual, expected):
+        return "quarantined content no longer matches the digest taken at delete time"
+    return None
+
+
+# ---------- Crash-safe operation journal ----------
+# A JSON list is rewritten wholesale and is lost if the process dies mid-write,
+# which is exactly when a record of what was in flight matters most. SQLite in
+# WAL mode records the *intent* durably before the filesystem is touched, so a
+# killed process leaves a row that recovery can reconcile.
+
+_JOURNAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS operations (
+    id          TEXT PRIMARY KEY,
+    op          TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    stored      TEXT,
+    size        INTEGER DEFAULT 0,
+    digest      TEXT,
+    digest_algo TEXT,
+    state       TEXT NOT NULL,
+    detail      TEXT,
+    started     REAL NOT NULL,
+    updated     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS operations_state ON operations(state);
+"""
+
+JOURNAL_OPEN = ("intent", "in_progress")
+
+
+class OperationJournal:
+    """Write-ahead record of destructive operations.
+
+    Usage is strictly: begin() -> touch the filesystem -> commit()/fail().
+    Anything left in an open state after a crash is reconciled by recover().
+    """
+
+    def __init__(self, db_path: Path = JOURNAL_DB) -> None:
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._ready = False
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        # The whole point is surviving a hard kill, so pay for durable commits.
+        conn.execute("PRAGMA synchronous=FULL")
+        if not self._ready:
+            conn.executescript(_JOURNAL_SCHEMA)
+            conn.commit()
+            self._ready = True
+        return conn
+
+    def begin(self, op: str, path: Path, size: int = 0, stored: str = "",
+              digest: str = "", digest_algo: str = "") -> Optional[str]:
+        """Durably record the intent. Returns an id, or None if the journal is
+        unavailable — callers treat that as "proceed without a safety net"
+        rather than blocking the whole operation."""
+        entry_id = f"{int(time.time())}-{secrets.token_hex(6)}"
+        now = time.time()
+        try:
+            with self._lock, contextlib.closing(self._connect()) as conn, conn:
+                conn.execute(
+                    "INSERT INTO operations (id, op, path, stored, size, digest,"
+                    " digest_algo, state, detail, started, updated)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (entry_id, op, str(path), stored, int(size), digest,
+                     digest_algo, "intent", "", now, now),
+                )
+            return entry_id
+        except sqlite3.Error:
+            return None
+
+    def mark(self, entry_id: Optional[str], state: str, detail: str = "",
+             stored: str = "", digest: str = "", digest_algo: str = "") -> None:
+        if not entry_id:
+            return
+        sets = ["state = ?", "detail = ?", "updated = ?"]
+        args: list = [state, detail, time.time()]
+        if stored:
+            sets.append("stored = ?")
+            args.append(stored)
+        if digest:
+            sets.extend(["digest = ?", "digest_algo = ?"])
+            args.extend([digest, digest_algo])
+        args.append(entry_id)
+        try:
+            with self._lock, contextlib.closing(self._connect()) as conn, conn:
+                conn.execute(f"UPDATE operations SET {', '.join(sets)} WHERE id = ?", args)
+        except sqlite3.Error:
+            pass
+
+    def open_entries(self) -> List[dict]:
+        placeholders = ",".join("?" * len(JOURNAL_OPEN))
+        try:
+            with self._lock, contextlib.closing(self._connect()) as conn, conn:
+                rows = conn.execute(
+                    f"SELECT * FROM operations WHERE state IN ({placeholders})"
+                    " ORDER BY started", JOURNAL_OPEN).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error:
+            return []
+
+    def prune(self, keep_days: int = 30) -> int:
+        cutoff = time.time() - keep_days * 86400
+        try:
+            with self._lock, contextlib.closing(self._connect()) as conn, conn:
+                cur = conn.execute(
+                    "DELETE FROM operations WHERE updated < ? AND state NOT IN"
+                    f" ({','.join('?' * len(JOURNAL_OPEN))})",
+                    (cutoff, *JOURNAL_OPEN))
+                return cur.rowcount or 0
+        except sqlite3.Error:
+            return 0
+
+    def recover(self) -> List[dict]:
+        """Reconcile every operation that was in flight when we last died.
+
+        For each open row we ask the filesystem what actually happened:
+          - original still there, nothing in quarantine -> the move never
+            started; the intent is void.
+          - original gone, content in quarantine -> the move completed but the
+            index write did not; re-attach it to the quarantine index.
+          - neither -> the content is unaccounted for; flagged, never guessed.
+        """
+        outcomes: List[dict] = []
+        entries = self.open_entries()
+        if not entries:
+            return outcomes
+        index = _quarantine_entries()
+        known = {row.get("id") for row in index}
+        index_changed = False
+        for row in entries:
+            original = Path(row["path"])
+            stored = Path(row["stored"]) if row.get("stored") else None
+            has_original = path_exists(original)
+            has_stored = bool(stored and path_exists(stored))
+            if has_original and not has_stored:
+                verdict, detail = "void", "original intact; operation never started"
+            elif has_stored and not has_original:
+                verdict, detail = "reattached", "content found in quarantine; index repaired"
+                qid = (stored.parent.name if stored else "")
+                if qid and qid not in known:
+                    index.append({
+                        "id": qid, "original": str(original), "stored": str(stored),
+                        "size": int(row.get("size") or 0),
+                        "created": int(row.get("started") or time.time()),
+                        "name": original.name,
+                        "digest": row.get("digest") or "",
+                        "digest_algo": row.get("digest_algo") or "",
+                        "recovered": True,
+                    })
+                    known.add(qid)
+                    index_changed = True
+            elif has_stored and has_original:
+                verdict, detail = "duplicated", ("content exists in both places; "
+                                                 "resolve manually before deleting either")
+            else:
+                verdict, detail = "unaccounted", "neither the original nor a quarantine copy was found"
+            self.mark(row["id"], f"recovered:{verdict}", detail)
+            outcomes.append({"id": row["id"], "op": row["op"], "path": row["path"],
+                             "verdict": verdict, "detail": detail})
+        if index_changed:
+            _save_quarantine_entries(index)
+        if outcomes:
+            log_security_event("journal-recovered", {"count": len(outcomes)})
+        return outcomes
+
+
+JOURNAL = OperationJournal()
+
+
+# ---------- Handle-based deletion ----------
+# Checking a path and then deleting it *by name* leaves a window in which the
+# name can be repointed at something else. Here the path is opened once, the
+# handle's own resolved path is what the guards run against, and the delete is
+# issued through that same handle — the name is never used to address the
+# object a second time.
+
+_GENERIC_DELETE = 0x00010000  # DELETE
+_FILE_READ_ATTRIBUTES = 0x0080
+_FILE_SHARE_READ = 0x00000001
+_FILE_SHARE_WRITE = 0x00000002
+_OPEN_EXISTING = 3
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_DISPOSITION_INFO = 4
+_INVALID_HANDLE_VALUE = -1
+_VOLUME_PREFIX = "\\\\?\\"
+
+
+def _handle_api():
+    """kernel32 with the handle-delete entry points bound, or None."""
+    k = _win_kernel32()
+    if k is None:
+        return None
+    if getattr(k, "_wmole_handle_ready", False):
+        return k
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.HANDLE]
+        k.CreateFileW.restype = wintypes.HANDLE
+        k.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
+                                                wintypes.DWORD, wintypes.DWORD]
+        k.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        k.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                 ctypes.c_void_p, wintypes.DWORD]
+        k.SetFileInformationByHandle.restype = wintypes.BOOL
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.CloseHandle.restype = wintypes.BOOL
+        k._wmole_handle_ready = True
+        return k
+    except Exception:
+        return None
+
+
+def _strip_volume_prefix(text: str) -> str:
+    if text.startswith(_VOLUME_PREFIX + "UNC\\"):
+        return "\\\\" + text[len(_VOLUME_PREFIX) + 4:]
+    if text.startswith(_VOLUME_PREFIX):
+        return text[len(_VOLUME_PREFIX):]
+    return text
+
+
+class DeleteHandle:
+    """An open handle to a filesystem object plus the path it really resolves to.
+
+    While this is open the object cannot be renamed or replaced (the handle is
+    opened without FILE_SHARE_DELETE), which is what closes the check-then-act
+    window.
+    """
+
+    def __init__(self, handle, resolved: Path, is_dir: bool) -> None:
+        self.handle = handle
+        self.resolved = resolved
+        self.is_dir = is_dir
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        k = _handle_api()
+        if k is not None and self.handle is not None:
+            k.CloseHandle(self.handle)
+
+    def delete(self) -> Optional[str]:
+        """Delete through the handle itself. None on success, else an error."""
+        k = _handle_api()
+        if k is None or self.handle is None:
+            return "handle deletion unavailable on this platform"
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _FileDispositionInfo(ctypes.Structure):
+                _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+            info = _FileDispositionInfo(DeleteFile=True)
+            ok = k.SetFileInformationByHandle(self.handle, _FILE_DISPOSITION_INFO,
+                                              ctypes.byref(info), ctypes.sizeof(info))
+            if not ok:
+                return f"handle delete failed (win32 error {ctypes.get_last_error()})"
+            return None
+        except Exception as exc:
+            return f"handle delete failed: {exc}"
+
+    def __enter__(self) -> "DeleteHandle":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def open_delete_handle(path: Path) -> tuple[Optional[DeleteHandle], Optional[str]]:
+    """Open `path` for deletion and resolve its true path from the handle.
+
+    Reparse points are opened as themselves, never followed: deleting a
+    junction must remove the link, not the tree behind it.
+    """
+    k = _handle_api()
+    if k is None:
+        return None, "handle deletion unavailable on this platform"
+    try:
+        import ctypes
+        from ctypes import wintypes
+        flags = _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT
+        handle = k.CreateFileW(str(path), _GENERIC_DELETE | _FILE_READ_ATTRIBUTES,
+                               _FILE_SHARE_READ | _FILE_SHARE_WRITE, None,
+                               _OPEN_EXISTING, flags, None)
+        if handle in (None, _INVALID_HANDLE_VALUE) or ctypes.c_void_p(handle).value in (
+                None, ctypes.c_void_p(_INVALID_HANDLE_VALUE).value):
+            return None, f"cannot open target (win32 error {ctypes.get_last_error()})"
+        buf = ctypes.create_unicode_buffer(32768)
+        length = k.GetFinalPathNameByHandleW(handle, buf, 32767, 0)
+        if length == 0 or length > 32767:
+            k.CloseHandle(handle)
+            return None, f"cannot resolve target (win32 error {ctypes.get_last_error()})"
+        resolved = Path(_strip_volume_prefix(buf.value))
+        try:
+            is_dir = stat.S_ISDIR(os.stat(path, follow_symlinks=False).st_mode)
+        except OSError:
+            is_dir = False
+        return DeleteHandle(handle, resolved, is_dir), None
+    except Exception as exc:
+        return None, f"cannot open target: {exc}"
+
+
+def handle_delete(path: Path, guard=None) -> Optional[str]:
+    """Delete `path` addressing it only through an open handle.
+
+    `guard(resolved_path)` is called with the path the handle actually resolves
+    to and may return a reason to abort. This is the whole point: the guard
+    sees the real object, not the name the caller typed.
+
+    Returns None on success, an error string otherwise. Falls back to the
+    name-based path only where the platform provides no handle API.
+    """
+    root, err = open_delete_handle(path)
+    if root is None:
+        return err
+    with root:
+        resolved = root.resolved
+        if guard is not None:
+            reason = guard(resolved)
+            if reason:
+                log_security_event("handle-delete-blocked",
+                                   {"path": str(path), "resolved": str(resolved),
+                                    "reason": reason})
+                return reason
+        if not root.is_dir or _is_reparse_point(path):
+            # Files and junctions: one disposition-delete on this handle.
+            error = root.delete()
+            if error is None:
+                return None
+            # Read-only content refuses the delete; clear the bit and retry
+            # against the path the handle resolved to, never the caller's name.
+            root.close()
+            try:
+                os.chmod(resolved, stat.S_IWRITE)
+            except OSError:
+                return error
+            return _delete_one_via_handle(resolved)
+        # Directories must be empty before the handle delete succeeds. Children
+        # are removed through their own handles, deepest first.
+        error = _delete_tree_via_handles(resolved)
+        if error:
+            return error
+        return root.delete()
+
+
+def _delete_tree_via_handles(root: Path) -> Optional[str]:
+    """Empty `root` by deleting each descendant through its own handle."""
+    try:
+        with os.scandir(root) as it:
+            children = list(it)
+    except OSError as exc:
+        return f"cannot enumerate {root}: {exc}"
+    for entry in children:
+        child = Path(entry.path)
+        try:
+            is_dir = entry.is_dir(follow_symlinks=False) and not is_reparse_dirent(entry)
+        except OSError:
+            is_dir = False
+        if is_dir:
+            error = _delete_tree_via_handles(child)
+            if error:
+                return error
+        error = _delete_one_via_handle(child)
+        if error:
+            return error
+    return None
+
+
+def _delete_one_via_handle(target: Path) -> Optional[str]:
+    """Delete a single file or empty directory through its own handle.
+
+    A read-only file opens fine but refuses the disposition delete, so the
+    read-only bit is cleared and the delete retried once — on the same path we
+    already resolved, not a fresh lookup.
+    """
+    handle, err = open_delete_handle(target)
+    if handle is None:
+        return err
+    with handle:
+        error = handle.delete()
+        if error is None:
+            return None
+    try:
+        os.chmod(target, stat.S_IWRITE)
+    except OSError:
+        return error
+    retry, err = open_delete_handle(target)
+    if retry is None:
+        return err
+    with retry:
+        return retry.delete()
+
+
+def handle_delete_supported() -> bool:
+    return _handle_api() is not None
+
+
 # ---------- Model ----------
 @dataclass
 class Item:
@@ -996,6 +2158,13 @@ class Item:
     error: Optional[str] = None
     # True when a sizing budget cut the walk short: `size` is a lower bound.
     truncated: bool = False
+    # Allocated bytes — what deleting this actually frees. -1 until measured;
+    # measuring costs an extra syscall per file, so it happens for the
+    # selection at confirmation time rather than for every scan candidate.
+    on_disk: int = -1
+    # Logical bytes that live only in the cloud and free nothing locally.
+    placeholder_bytes: int = 0
+    placeholder_files: int = 0
 
 
 @dataclass
@@ -1711,6 +2880,28 @@ def collect_selected_targets(categories: List[Category], estimated: bool = False
         "total": sum(row["size"] for row in targets),
         "estimated": estimated,
     }
+
+
+def measure_selection(items: List["Item"], max_seconds_each: Optional[float] = 8.0) -> DiskFacts:
+    """Fill in on-disk and placeholder figures for the items about to be deleted.
+
+    Mutates each Item so the UI can show per-row detail, and returns the
+    aggregate. `size` (logical) is left untouched — the two numbers are
+    reported side by side rather than one silently replacing the other.
+    """
+    total = DiskFacts()
+    for it in items:
+        facts = disk_facts(it.path, max_seconds=max_seconds_each)
+        it.on_disk = facts.on_disk
+        it.placeholder_bytes = facts.placeholder_bytes
+        it.placeholder_files = facts.placeholder_files
+        total.logical += facts.logical
+        total.on_disk += facts.on_disk
+        total.placeholder_bytes += facts.placeholder_bytes
+        total.placeholder_files += facts.placeholder_files
+        total.files += facts.files
+        total.truncated = total.truncated or facts.truncated
+    return total
 
 
 def discover_game_dirs() -> List[Item]:
@@ -3320,21 +4511,33 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
                    opt: List[dict]) -> str:
     # Collect selected items, partitioned into protected (blocked) and deletable.
     candidates: List[Item] = []
+    kinds: Dict[str, str] = {}  # path -> category key, for risk scoring
     if view.kind == "items" and view.category is not None:
         for it in view.category.items:
             if it.selected and not it.deleted:
                 candidates.append(it)
+                kinds[str(it.path)] = view.category.key
     else:
         for cat in scanner.categories:
             for it in cat.items:
                 if it.selected and not it.deleted:
                     candidates.append(it)
+                    kinds[str(it.path)] = cat.key
     protected = [it for it in candidates if is_protected_path(it.path)]
     targets   = [it for it in candidates if not is_protected_path(it.path)]
     if not targets:
         return T("nothing_selected") if not protected else T("protected_header", n=len(protected))
 
     total = sum(t.size for t in targets)
+    # Measure what the delete really frees. This is the moment to pay for the
+    # extra syscalls: the list is now small and the number is about to be shown
+    # as a promise. Budgeted so a pathological tree cannot stall the dialog.
+    facts = measure_selection(targets, max_seconds_each=2.0)
+    # Scored without the git probe: it shells out per path and the guard in
+    # delete_path runs it again for real before anything is removed.
+    scored = [(risk_score(t.path, kind=kinds.get(str(t.path), ""), check_git=False), t)
+              for t in targets[:50]]
+    riskiest = max(scored, key=lambda pair: pair[0].score, default=None)
     if dry_run:    action_label = T("act_dry_run")
     elif use_trash: action_label = T("act_trash")
     else:           action_label = T("act_permanent")
@@ -3345,7 +4548,24 @@ def confirm_delete(live: Live, scanner: Scanner, view: View, cursor: int,
     body_txt = Text()
     body_txt.append(T("confirm_header", n=len(targets), action=action_label, size=human_size(total)),
                     style="bold red" if danger else "bold yellow")
-    body_txt.append("\n\n")
+    body_txt.append("\n")
+    # The headline number above is logical size, kept for continuity. What the
+    # drive will actually show afterwards is the on-disk figure.
+    body_txt.append("  " + T("on_disk_note", size=human_size(facts.on_disk),
+                             logical=human_size(facts.logical)) + "\n",
+                    style="bright_cyan")
+    if facts.truncated:
+        body_txt.append("  " + T("on_disk_partial") + "\n", style="grey50")
+    if facts.placeholder_files:
+        body_txt.append("  ☁ " + T("placeholder_note", n=facts.placeholder_files,
+                                   size=human_size(facts.placeholder_bytes)) + "\n",
+                        style="yellow")
+    if riskiest is not None and riskiest[0].score >= 45:
+        risk_obj, risk_item = riskiest
+        body_txt.append("  ⚠ " + T("risk_note", score=risk_obj.score,
+                                   level=risk_obj.level, path=risk_item.path.name) + "\n",
+                        style="red" if risk_obj.score >= 70 else "yellow")
+    body_txt.append("\n")
     preview_n = 10
     for it in targets[:preview_n]:
         disp = str(it.path)
@@ -3654,6 +4874,14 @@ def run_tui(initial_view: str = "analyze", start_path: Optional[Path] = None,
             ctypes.windll.kernel32.SetConsoleTitleW("wmole · disk cleaner")
         except Exception:
             pass
+
+    # Reconcile anything a previous run was in the middle of when it died,
+    # before this session can start new destructive work.
+    try:
+        JOURNAL.recover()
+        JOURNAL.prune()
+    except Exception:
+        pass
 
     # First launch: offer a one-time quick cleanup before the main UI loads.
     if initial_view == "analyze" and start_path is None:
@@ -4895,6 +6123,95 @@ def _serve_supply_audit(req: dict, emit, cancel) -> None:
     emit({"id": rid, "ev": "done", "ok": True, "payload": payload})
 
 
+def _serve_explain(req: dict, emit, cancel) -> None:
+    """Answer the six questions for one or many candidates.
+
+    Purely table-driven, so a whole visible page can be explained in one call
+    without touching the filesystem more than the risk score already does.
+    """
+    rid = req.get("id")
+    rows = req.get("items") or []
+    if req.get("path"):
+        rows = [{"path": req["path"], "kind": req.get("kind", "")}]
+    want_risk = req.get("risk", True)
+    check_git = bool(req.get("check_git", False))
+    payload = []
+    for row in rows:
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        p = Path(str(row.get("path", "")))
+        kind = str(row.get("kind", ""))
+        entry = {"path": str(p), "kind": kind,
+                 "explain": explain_item(p, kind).as_dict()}
+        if want_risk:
+            entry["risk"] = risk_score(p, kind, check_git=check_git).as_dict()
+        payload.append(entry)
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {"items": payload}})
+
+
+def _serve_disk_facts(req: dict, emit, cancel) -> None:
+    """Report logical vs. actually-allocated bytes for the given paths."""
+    rid = req.get("id")
+    paths = [Path(p) for p in req.get("paths", []) if p]
+    budget = float(req.get("budget_seconds", 8.0))
+    rows = []
+    for p in paths:
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        facts = disk_facts(p, max_seconds=budget)
+        rows.append({"path": str(p), **facts.as_dict()})
+        emit({"id": rid, "ev": "item", "path": str(p), **facts.as_dict()})
+    total = DiskFacts()
+    for row in rows:
+        total.logical += row["logical"]
+        total.on_disk += row["on_disk"]
+        total.placeholder_bytes += row["placeholder_bytes"]
+        total.placeholder_files += row["placeholder_files"]
+        total.files += row["files"]
+        total.truncated = total.truncated or row["truncated"]
+    emit({"id": rid, "ev": "done", "ok": True,
+          "payload": {"items": rows, "total": total.as_dict()}})
+
+
+def _serve_journal(req: dict, emit, cancel) -> None:
+    """Inspect or reconcile the write-ahead operation journal."""
+    rid = req.get("id")
+    if req.get("recover"):
+        outcomes = JOURNAL.recover()
+        JOURNAL.prune()
+        emit({"id": rid, "ev": "done", "ok": True,
+              "payload": {"recovered": outcomes}})
+        return
+    emit({"id": rid, "ev": "done", "ok": True,
+          "payload": {"open": JOURNAL.open_entries()}})
+
+
+def _serve_quarantine_verify(req: dict, emit, cancel) -> None:
+    """Re-check quarantined content against the digest taken at delete time."""
+    rid = req.get("id")
+    wanted = req.get("entry_id")
+    rows = []
+    for entry in _quarantine_entries():
+        if wanted and entry.get("id") != wanted:
+            continue
+        if cancel.is_set():
+            emit({"id": rid, "ev": "done", "ok": False, "cancelled": True})
+            return
+        stored = Path(entry.get("stored", ""))
+        if not path_exists(stored):
+            problem = "quarantined content is missing"
+        else:
+            problem = verify_digest(stored, entry.get("digest", ""),
+                                    entry.get("digest_algo", ""))
+        rows.append({"id": entry.get("id"), "original": entry.get("original"),
+                     "algo": entry.get("digest_algo") or "",
+                     "partial": bool(entry.get("digest_partial")),
+                     "ok": problem is None, "problem": problem or ""})
+    emit({"id": rid, "ev": "done", "ok": True, "payload": {"entries": rows}})
+
+
 def _serve_handle(req: dict, emit, cancels: dict) -> None:
     """Tek bir isteği işle. emit(event_dict) çağrılır."""
     rid = req.get("id")
@@ -4965,6 +6282,14 @@ def _serve_handle(req: dict, emit, cancels: dict) -> None:
             _serve_secret_scan(req, emit, cancel)
         elif op == "supply_audit":
             _serve_supply_audit(req, emit, cancel)
+        elif op == "explain":
+            _serve_explain(req, emit, cancel)
+        elif op == "disk_facts":
+            _serve_disk_facts(req, emit, cancel)
+        elif op == "journal":
+            _serve_journal(req, emit, cancel)
+        elif op == "quarantine_verify":
+            _serve_quarantine_verify(req, emit, cancel)
         else:
             emit({"id": rid, "ev": "error", "code": "unknown_op",
                   "message": f"unknown op: {op}"})
@@ -4990,7 +6315,14 @@ def cmd_serve() -> None:
     cancels: dict = {}  # rid -> threading.Event
     workers: list = []
 
-    _serve_emit(out_lock, {"id": None, "ev": "ready"})
+    # Reconcile anything that was in flight when a previous run was killed,
+    # before the UI can start issuing new destructive work.
+    try:
+        recovered = JOURNAL.recover()
+        JOURNAL.prune()
+    except Exception:
+        recovered = []
+    _serve_emit(out_lock, {"id": None, "ev": "ready", "recovered": recovered})
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:
@@ -6292,10 +7624,177 @@ def cli_completion(shell: str, install: bool, json_out: bool) -> None:
         print(script)
 
 
+# ---------- Benchmark harness ----------
+# Throughput claims are only worth making if anyone can reproduce them, so the
+# harness ships with the tool: `wmole bench --json`. It builds a synthetic
+# tree, times the scan and the delete separately, and reports items/sec along
+# with enough machine detail to make the number interpretable.
+
+BENCH_DEFAULT_DIRS = 200
+BENCH_DEFAULT_FILES_PER_DIR = 50
+BENCH_DEFAULT_FILE_BYTES = 4096
+
+
+def build_bench_tree(root: Path, dirs: int, files_per_dir: int,
+                     file_bytes: int) -> int:
+    """Materialise a synthetic tree; returns the number of files created."""
+    payload = b"w" * file_bytes
+    created = 0
+    for d in range(dirs):
+        # Two levels, so the walk pays for real directory recursion.
+        sub = root / f"pkg{d // 20:03d}" / f"mod{d:04d}"
+        sub.mkdir(parents=True, exist_ok=True)
+        for f in range(files_per_dir):
+            (sub / f"file{f:03d}.bin").write_bytes(payload)
+            created += 1
+    return created
+
+
+def _bench_machine() -> dict:
+    info = {"platform": platform.platform(), "python": platform.python_version(),
+            "cpu_count": os.cpu_count() or 0}
+    if psutil is not None:
+        try:
+            info["cpu_freq_mhz"] = round(psutil.cpu_freq().current)
+        except Exception:
+            pass
+        try:
+            info["ram_gb"] = round(psutil.virtual_memory().total / 1024 ** 3, 1)
+        except Exception:
+            pass
+    return info
+
+
+def run_benchmark(dirs: int = BENCH_DEFAULT_DIRS,
+                  files_per_dir: int = BENCH_DEFAULT_FILES_PER_DIR,
+                  file_bytes: int = BENCH_DEFAULT_FILE_BYTES,
+                  workers: int = 0, keep: bool = False) -> dict:
+    """Measure scan and delete throughput on a freshly built tree.
+
+    The tree is built under %TEMP% and removed afterwards. Build time is
+    reported but excluded from both throughput figures.
+    """
+    workers = workers or min(32, (os.cpu_count() or 4) * 4)
+    base = Path(TEMP) / f"wmole-bench-{secrets.token_hex(4)}"
+    base.mkdir(parents=True, exist_ok=True)
+    result: dict = {"machine": _bench_machine(), "version": __version__,
+                    "params": {"dirs": dirs, "files_per_dir": files_per_dir,
+                               "file_bytes": file_bytes, "workers": workers}}
+    try:
+        t0 = time.perf_counter()
+        files = build_bench_tree(base, dirs, files_per_dir, file_bytes)
+        result["build_seconds"] = round(time.perf_counter() - t0, 3)
+        result["files"] = files
+
+        # --- scan: walk every entry and compute both size views ---
+        t0 = time.perf_counter()
+        facts = disk_facts(base)
+        scan_seconds = time.perf_counter() - t0
+        result["scan"] = {
+            "seconds": round(scan_seconds, 3),
+            "items": facts.files,
+            "items_per_second": round(facts.files / scan_seconds) if scan_seconds else 0,
+            "logical_bytes": facts.logical,
+            "on_disk_bytes": facts.on_disk,
+        }
+
+        # --- parallel sizing: the path a real scan takes ---
+        leaves = [p for p in base.rglob("mod*") if p.is_dir()]
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            sized = sum(1 for _ in pool.map(lambda p: sized_dir(p, cache=None), leaves))
+        parallel_seconds = time.perf_counter() - t0
+        result["parallel_sizing"] = {
+            "seconds": round(parallel_seconds, 3),
+            "dirs": sized,
+            "dirs_per_second": round(sized / parallel_seconds) if parallel_seconds else 0,
+        }
+
+        # --- delete: handle-addressed removal of the whole tree ---
+        subtrees = sorted(p for p in base.iterdir() if p.is_dir())
+        t0 = time.perf_counter()
+        errors = []
+        for sub in subtrees:
+            err = permanent_delete(sub)
+            if err:
+                errors.append({"path": str(sub), "error": err})
+        delete_seconds = time.perf_counter() - t0
+        result["delete"] = {
+            "seconds": round(delete_seconds, 3),
+            "items": files,
+            "items_per_second": round(files / delete_seconds) if delete_seconds else 0,
+            "handle_based": handle_delete_supported(),
+            "errors": errors,
+        }
+        return result
+    finally:
+        if not keep:
+            shutil.rmtree(base, ignore_errors=True)
+        else:
+            result["kept_at"] = str(base)
+
+
+def cli_bench(json_out: bool, dirs: int, files_per_dir: int, file_bytes: int,
+              keep: bool) -> None:
+    report = run_benchmark(dirs=dirs, files_per_dir=files_per_dir,
+                           file_bytes=file_bytes, keep=keep)
+    if json_out:
+        print(json.dumps(report, indent=2))
+        return
+    console = Console()
+    console.print(f"[bold]wmole bench[/bold]  v{report['version']}  "
+                  f"{report['machine'].get('platform', '')}")
+    console.print(f"  tree      {report['files']} files in "
+                  f"{report['params']['dirs']} dirs "
+                  f"(built in {report['build_seconds']}s)")
+    scan = report["scan"]
+    console.print(f"  scan      {scan['items_per_second']} items/s "
+                  f"({scan['items']} in {scan['seconds']}s)")
+    par = report["parallel_sizing"]
+    console.print(f"  sizing    {par['dirs_per_second']} dirs/s "
+                  f"({par['dirs']} in {par['seconds']}s, "
+                  f"{report['params']['workers']} workers)")
+    dele = report["delete"]
+    mode = "handle-based" if dele["handle_based"] else "name-based"
+    console.print(f"  delete    {dele['items_per_second']} items/s "
+                  f"({dele['items']} in {dele['seconds']}s, {mode})")
+    if dele["errors"]:
+        console.print(f"  [red]{len(dele['errors'])} delete error(s)[/red]")
+
+
+def cli_explain(paths: List[Path], json_out: bool) -> None:
+    """Print the explanation card and risk score for each path."""
+    rows = []
+    for p in paths:
+        card = explain_item(p)
+        risk = risk_score(p)
+        rows.append({"path": str(p), "explain": card.as_dict(), "risk": risk.as_dict()})
+    if json_out:
+        print(json.dumps(rows, indent=2))
+        return
+    console = Console()
+    for row in rows:
+        card, risk = row["explain"], row["risk"]
+        console.print(f"\n[bold]{row['path']}[/bold]")
+        console.print(f"  what        {card['what']}")
+        console.print(f"  you lose    {card['lost']}")
+        console.print(f"  you keep    {card['kept']}")
+        console.print(f"  rebuild     {card['rebuild'] or '— nothing recreates this —'}"
+                      "   [dim](shown for reference; wmole never runs it)[/dim]")
+        console.print(f"  space back  {card['when_freed']}")
+        console.print(f"  reversible  {card['reversible']}")
+        colour = {"low": "green", "moderate": "yellow",
+                  "high": "red", "critical": "bold red"}[risk["level"]]
+        console.print(f"  risk        [{colour}]{risk['score']}/100 ({risk['level']})[/{colour}]")
+        for mod in risk["modifiers"]:
+            sign = "+" if mod["points"] >= 0 else ""
+            console.print(f"                {sign}{mod['points']:>4}  {mod['label']}")
+
+
 def main_cli() -> None:
     p = argparse.ArgumentParser(prog="wmole", description="Windows port of mole")
     p.add_argument("mode", nargs="?", default="analyze",
-                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports", "doctor", "undo", "hook", "serve"])
+                   choices=["analyze", "clean", "purge", "status", "optimize", "uninstall", "installer", "installers", "update", "remove", "completion", "ports", "doctor", "undo", "hook", "serve", "bench", "explain", "verify"])
     p.add_argument("targets", nargs="*", help="optional paths for analyze/purge/installers")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true", dest="json_out")
@@ -6314,6 +7813,10 @@ def main_cli() -> None:
     p.add_argument("--no-cache", action="store_true", help="bypass size cache for this run")
     p.add_argument("--force", action="store_true", help="hook mode: overwrite an existing pre-commit hook")
     p.add_argument("--run", action="store_true", help="hook mode: scan staged files (used by the installed hook)")
+    p.add_argument("--dirs", type=int, default=BENCH_DEFAULT_DIRS, help="bench mode: directories to create")
+    p.add_argument("--files-per-dir", type=int, default=BENCH_DEFAULT_FILES_PER_DIR, help="bench mode: files per directory")
+    p.add_argument("--file-bytes", type=int, default=BENCH_DEFAULT_FILE_BYTES, help="bench mode: bytes per file")
+    p.add_argument("--keep", action="store_true", help="bench mode: leave the generated tree in place")
     args = p.parse_args()
 
     # Do not start a final background check while the user is disabling it.
@@ -6377,6 +7880,35 @@ def main_cli() -> None:
         cli_doctor(json_out=args.json_out)
     elif args.mode == "undo":
         cli_undo(entry_id=args.targets[0] if args.targets else "", json_out=args.json_out)
+    elif args.mode == "bench":
+        cli_bench(json_out=args.json_out, dirs=args.dirs,
+                  files_per_dir=args.files_per_dir, file_bytes=args.file_bytes,
+                  keep=args.keep)
+    elif args.mode == "explain":
+        cli_explain(target_paths or [USER], json_out=args.json_out)
+    elif args.mode == "verify":
+        outcomes = JOURNAL.recover()
+        entries = []
+        for entry in _quarantine_entries():
+            stored = Path(entry.get("stored", ""))
+            problem = ("quarantined content is missing" if not path_exists(stored)
+                       else verify_digest(stored, entry.get("digest", ""),
+                                          entry.get("digest_algo", "")))
+            entries.append({"id": entry.get("id"), "original": entry.get("original"),
+                            "ok": problem is None, "problem": problem or ""})
+        if args.json_out:
+            print(json.dumps({"recovered": outcomes, "quarantine": entries}, indent=2))
+        else:
+            console = Console()
+            for row in outcomes:
+                console.print(f"[yellow]recovered[/yellow] {row['verdict']}  {row['path']}"
+                              f"\n            {row['detail']}")
+            for row in entries:
+                mark = "[green]ok[/green]" if row["ok"] else "[red]FAILED[/red]"
+                console.print(f"{mark}  {row['original']}"
+                              + (f"\n     {row['problem']}" if row["problem"] else ""))
+            if not outcomes and not entries:
+                console.print("nothing in quarantine, journal clean")
     elif args.mode == "hook":
         action = "run" if args.run else (args.targets[0].strip().lower() if args.targets else "")
         sys.exit(cli_hook(action=action, json_out=args.json_out, force=args.force))

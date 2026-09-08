@@ -1,3 +1,6 @@
 rich>=13.7
 send2trash>=1.8
 psutil>=5.9
+# Quarantine integrity digests. Optional: wmole falls back to hashlib's
+# blake2b when this is not installed.
+blake3>=0.4

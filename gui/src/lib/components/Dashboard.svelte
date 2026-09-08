@@ -8,6 +8,7 @@
   import { toast } from "$lib/toast";
   import { notify } from "$lib/notify";
   import { t, tr } from "$lib/i18n";
+  import { theme } from "$lib/theme";
 
   let s = $state<Record<string, any>>({});
   let hist = $state<Record<string, any>>({});
@@ -45,6 +46,23 @@
   function color(p: number, warn = 75, crit = 90) {
     return p >= crit ? "#e5534b" : p >= warn ? "#d29922" : "#58d6a0";
   }
+
+  // Health counts *down*: 100 is good, so it is toned on its inverse.
+  let metrics = $derived([
+    { label: "Disk", value: s.disk_percent ?? 0, tone: color(s.disk_percent ?? 0),
+      display: s.disk_percent != null ? `${s.disk_percent}%` : "—" },
+    { label: "RAM", value: s.memory_percent ?? 0, tone: color(s.memory_percent ?? 0),
+      display: s.memory_percent != null ? `${s.memory_percent}%` : "—" },
+    { label: "CPU", value: s.cpu_percent ?? 0, tone: color(s.cpu_percent ?? 0),
+      display: s.cpu_percent != null ? `${s.cpu_percent}%` : "—" },
+    { label: "Sağlık", value: s.health ?? 0, tone: color(100 - (s.health ?? 0)),
+      display: s.health != null ? `${s.health}/100` : "—" },
+  ]);
+
+  const METER_STYLE: Record<string, "bars" | "tiles" | "gauges"> = {
+    fluent: "bars", linear: "bars", cards: "tiles", bento: "tiles", hud: "gauges",
+  };
+  let meterStyle = $derived(METER_STYLE[$theme] ?? "bars");
 
   async function poll() {
     const done = await request({ op: "status" });
@@ -102,23 +120,50 @@
 <div class="dash">
   <h2>{$t("Gösterge Paneli")}</h2>
 
-  <!-- Metre çubukları -->
-  <div class="meters">
-    {#each [["Disk", s.disk_percent], ["RAM", s.memory_percent], ["CPU", s.cpu_percent], ["Sağlık", s.health]] as [label, val]}
-      <div class="meter">
-        <span class="ml">{$t(label as string)}</span>
-        <div class="bar">
-          <div
-            class="fill"
-            style="width:{label === 'Sağlık' ? val ?? 0 : val ?? 0}%; background:{label ===
-            'Sağlık'
-              ? color(100 - (val ?? 0))
-              : color(val ?? 0)}"
-          ></div>
-        </div>
-        <span class="mv">{val ?? "—"}{label === "Sağlık" ? "/100" : "%"}</span>
+  <!-- Metreler. Sunum biçimi aktif layout temasına göre değişir:
+       çubuk (Fluent/Linear), döşeme (Cards/Bento), kadran (HUD). -->
+  <div class="meters surface" class:tiles={meterStyle === "tiles"}>
+    {#if meterStyle === "gauges"}
+      <div class="gauges">
+        {#each metrics as m}
+          <div class="gauge" title="{m.label}: {m.display}">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+              <circle class="track" cx="50" cy="50" r="42" />
+              <circle
+                class="arc"
+                cx="50"
+                cy="50"
+                r="42"
+                stroke={m.tone}
+                stroke-dasharray="{(m.value / 100) * 264} 264"
+              />
+            </svg>
+            <div class="gv">
+              <strong style="color:{m.tone}">{m.display}</strong>
+              <span>{$t(m.label)}</span>
+            </div>
+          </div>
+        {/each}
       </div>
-    {/each}
+    {:else if meterStyle === "tiles"}
+      {#each metrics as m}
+        <div class="tile">
+          <span class="tl">{$t(m.label)}</span>
+          <strong class="tv" style="color:{m.tone}">{m.display}</strong>
+          <div class="bar"><div class="fill" style="width:{m.value}%; background:{m.tone}"></div></div>
+        </div>
+      {/each}
+    {:else}
+      {#each metrics as m}
+        <div class="meter">
+          <span class="ml">{$t(m.label)}</span>
+          <div class="bar">
+            <div class="fill" style="width:{m.value}%; background:{m.tone}"></div>
+          </div>
+          <span class="mv">{m.display}</span>
+        </div>
+      {/each}
+    {/if}
     <div class="sub">
       Disk: {s.disk_free ? fmt(s.disk_free) + " " + $t("boş") : "—"} · RAM: {s.memory_used
         ? fmt(s.memory_used)
@@ -223,34 +268,75 @@
 <StatusBar label={progress.label} done={progress.done} total={progress.total} onCancel={null} />
 
 <style>
-  .dash { display: flex; flex-direction: column; gap: 14px; font-family: monospace; }
-  h2 { margin: 0; color: var(--fg); }
-  h3 { margin: 0 0 10px; color: #58d6a0; font-size: 14px; }
+  .dash { display: flex; flex-direction: column; gap: var(--gap); font-family: var(--font); font-size: var(--fs); }
+  h2 { margin: 0; color: var(--fg); font-size: var(--fs-lg); }
+  h3 { margin: 0 0 var(--gap); color: var(--accent); font-size: var(--fs); }
   .meters {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
-    display: flex; flex-direction: column; gap: 8px;
+    padding: var(--pad);
+    display: flex; flex-direction: column; gap: calc(var(--gap) * 0.7);
   }
-  .meter { display: flex; align-items: center; gap: 12px; }
+  /* Bento/Cards: metrics become a tile board rather than stacked bars. */
+  .meters.tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--gap);
+  }
+  /* The summary line and the core strip are full-width captions, not tiles. */
+  .meters.tiles .sub,
+  .meters.tiles .cores { grid-column: 1 / -1; }
+  .tile {
+    display: flex; flex-direction: column; gap: 5px;
+    padding: var(--pad);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  :global(html[data-theme="bento"]) .tile { border-color: transparent; box-shadow: var(--shadow); }
+  .tl { color: var(--muted); font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.04em; }
+  .tv { font-size: calc(var(--fs-lg) * 1.7); line-height: 1.1; font-weight: 800; }
+  .meter { display: flex; align-items: center; gap: var(--gap); }
   .ml { color: var(--muted); min-width: 60px; }
-  .bar { flex: 1; height: 12px; background: var(--border); border-radius: 6px; overflow: hidden; }
+  .bar { flex: 1; height: 10px; background: var(--border); border-radius: 6px; overflow: hidden; }
+  .tile .bar { flex: none; height: 5px; }
   .fill { height: 100%; transition: width 0.3s; }
-  .mv { color: var(--fg); min-width: 70px; text-align: right; }
-  .sub { color: var(--faint); font-size: 12px; margin-top: 4px; }
+  .mv { color: var(--fg); min-width: 70px; text-align: right; font-family: var(--font-mono); }
+  .sub { color: var(--faint); font-size: var(--fs-sm); margin-top: 4px; }
+
+  /* HUD: radial instrument gauges. */
+  .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--gap); }
+  .gauge { position: relative; display: flex; align-items: center; justify-content: center; }
+  .gauge svg { width: 100%; max-width: 132px; transform: rotate(-90deg); }
+  .gauge .track { fill: none; stroke: var(--border); stroke-width: 7; }
+  .gauge .arc {
+    fill: none; stroke-width: 7; stroke-linecap: round;
+    transition: stroke-dasharray 0.4s;
+  }
+  .gv {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; pointer-events: none;
+  }
+  .gv strong { font-size: var(--fs-lg); font-family: var(--font-mono); }
+  .gv span { color: var(--muted); font-size: var(--fs-sm); text-transform: uppercase; }
   .cores { display: flex; align-items: flex-end; gap: 3px; margin-top: 6px; height: 36px; }
   .core { width: 10px; height: 100%; background: var(--border); border-radius: 2px; display: flex; align-items: flex-end; overflow: hidden; }
   .corefill { width: 100%; border-radius: 2px; }
   .chart { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin: 8px 0; }
   .cbar { flex: 1; height: 100%; display: flex; align-items: flex-end; background: var(--bg); border-radius: 3px; overflow: hidden; }
   .cbarfill { width: 100%; background: #58d6a0; border-radius: 3px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-  .muted { color: var(--faint); }
-  .green { color: #58d6a0; }
-  .row { display: flex; gap: 10px; margin-top: 8px; }
-  button {
-    background: var(--btn); color: var(--fg); border: none; padding: 8px 16px;
-    border-radius: 5px; cursor: pointer; font-family: monospace;
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--pad);
+    box-shadow: var(--shadow); backdrop-filter: var(--panel-blur);
   }
-  button.primary { background: #2ea043; color: white; }
+  .muted { color: var(--faint); }
+  .green { color: var(--ok); }
+  .row { display: flex; gap: var(--gap); margin-top: var(--gap); flex-wrap: wrap; }
+  button {
+    background: var(--btn); color: var(--fg); border: none; padding: 6px 14px;
+    border-radius: var(--radius); cursor: pointer; font-family: var(--font); font-size: var(--fs);
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
   .histlist { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 3px; }
   .histlist li { display: flex; gap: 10px; font-size: 12px; }
   .histlist .green { min-width: 80px; text-align: right; }

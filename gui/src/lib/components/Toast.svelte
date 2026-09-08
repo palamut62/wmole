@@ -21,12 +21,12 @@
   .toast {
     padding: 10px 14px;
     border-radius: 6px;
-    font-family: monospace;
+    font-family: var(--font);
     font-size: 13px;
     background: var(--border);
     color: var(--fg);
-    border-left: 3px solid #58d6a0;
+    border-left: 3px solid var(--ok);
   }
-  .toast.err { border-left-color: #e5534b; }
+  .toast.err { border-left-color: var(--danger); }
   .toast.info { border-left-color: #539bf5; }
 </style>

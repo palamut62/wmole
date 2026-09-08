@@ -49,11 +49,11 @@
     padding: 22px;
     min-width: 360px;
     max-width: 520px;
-    font-family: monospace;
+    font-family: var(--font);
     color: var(--fg);
   }
-  h3 { margin: 0 0 12px; color: #58d6a0; }
-  h3.danger { color: #e5534b; }
+  h3 { margin: 0 0 12px; color: var(--ok); }
+  h3.danger { color: var(--danger); }
   p { color: var(--muted); white-space: pre-wrap; }
   .actions {
     display: flex;
@@ -66,9 +66,9 @@
     padding: 8px 14px;
     border-radius: 5px;
     cursor: pointer;
-    font-family: monospace;
+    font-family: var(--font);
   }
   .ghost { background: var(--btn); color: var(--fg); }
-  button.danger { background: #e5534b; color: white; }
-  button:not(.ghost):not(.danger) { background: #2ea043; color: white; }
+  button.danger { background: var(--danger); color: white; }
+  button:not(.ghost):not(.danger) { background: var(--accent); color: white; }
 </style>

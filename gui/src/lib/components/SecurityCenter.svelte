@@ -11,7 +11,14 @@
 
   let root = $state("");
   let loading = $state(false);
+  type VerifyRow = { id: string; original: string; ok: boolean; problem: string };
+  type RecoveredRow = { id: string; op: string; path: string; verdict: string; detail: string };
+
   let quarantine = $state<QuarantineEntry[]>([]);
+  let verifyRows = $state<VerifyRow[]>([]);
+  let recovered = $state<RecoveredRow[]>([]);
+  let verifying = $state(false);
+  let recovering = $state(false);
   let logs = $state<LogEntry[]>([]);
   let logValid = $state(true);
   let protectedProcesses = $state<string[]>([]);
@@ -63,6 +70,44 @@
     const result = await request({ op: "quarantine_restore", entry_id: id });
     toast(tr(result.ok ? "Karantina öğesi geri yüklendi" : "Geri yükleme başarısız"), result.ok ? "ok" : "err");
     await load();
+  }
+
+  // Re-hash every quarantined item and compare against the digest taken when
+  // it was moved. A mismatch means the vault content changed behind our back.
+  async function verifyQuarantine() {
+    verifying = true;
+    try {
+      const result = await request({ op: "quarantine_verify" });
+      verifyRows = ((result.payload as any)?.entries ?? []) as VerifyRow[];
+      const bad = verifyRows.filter((r) => !r.ok).length;
+      toast(
+        bad
+          ? `${bad} karantina öğesi doğrulanamadı`
+          : `${verifyRows.length} öğe doğrulandı`,
+        bad ? "err" : "ok",
+      );
+    } finally {
+      verifying = false;
+    }
+  }
+
+  // Reconcile operations that were recorded in the journal but never finished
+  // — what a kill -9 in the middle of a delete leaves behind.
+  async function recoverJournal() {
+    recovering = true;
+    try {
+      const result = await request({ op: "journal", recover: true });
+      recovered = ((result.payload as any)?.recovered ?? []) as RecoveredRow[];
+      toast(
+        recovered.length
+          ? `${recovered.length} yarım kalan işlem uzlaştırıldı`
+          : "Yarım kalan işlem yok",
+        "ok",
+      );
+      await load();
+    } finally {
+      recovering = false;
+    }
   }
 
   async function saveProtection() {
@@ -120,6 +165,34 @@
 
   <section class="panel">
     <h3>Geri Alma Kasası</h3>
+    <div class="row">
+      <button onclick={verifyQuarantine} disabled={verifying}>
+        {verifying ? "Doğrulanıyor…" : "Bütünlüğü doğrula"}
+      </button>
+      <button onclick={recoverJournal} disabled={recovering}>
+        {recovering ? "Uzlaştırılıyor…" : "Yarım kalan işleri uzlaştır"}
+      </button>
+      <span class="muted">
+        Karantinaya alınırken içerik özeti alınır; geri yüklerken tutmuyorsa geri alma reddedilir.
+      </span>
+    </div>
+    {#if verifyRows.length}
+      <div class="results">
+        {#each verifyRows as row}
+          <div class="entry">
+            <b class:bad={!row.ok}>{row.ok ? "✔" : "✖"}</b>
+            <div><span>{row.original}</span>{#if row.problem}<span class="bad">{row.problem}</span>{/if}</div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if recovered.length}
+      <div class="results">
+        {#each recovered as row}
+          <div class="entry"><b>{row.verdict}</b><div><span>{row.path}</span><span class="muted">{row.detail}</span></div></div>
+        {/each}
+      </div>
+    {/if}
     {#if !quarantine.length}<p class="muted">Karantinada öğe yok.</p>{/if}
     {#each quarantine as entry}
       <div class="entry"><div><b>{entry.name}</b><span>{entry.original} · {fmt(entry.size)} · {new Date(entry.created * 1000).toLocaleString()}</span></div><button onclick={() => restore(entry.id)}>Geri Yükle</button></div>
@@ -151,6 +224,7 @@
   .results { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 5px; } .finding, .event, .entry { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 7px 0; }
   .finding span, .event span, .entry span { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; } .finding span, .event span { flex: 1; } code { color: #d29922; }
   .entry { justify-content: space-between; } .entry div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .bad { color: #e5534b; }
   details { border-top: 1px solid var(--border); padding: 7px 0; } pre { white-space: pre-wrap; max-height: 180px; overflow: auto; color: var(--muted); font-size: 11px; }
   .chips { display: flex; flex-wrap: wrap; gap: 5px; } .chips span { background: var(--btn); border-radius: 12px; padding: 4px 6px 4px 10px; color: var(--muted); } .chips button { padding: 0 4px; background: none; color: #e5534b; }
   time { color: var(--faint); font-size: 10px; } .log { max-height: 300px; }

@@ -30,7 +30,7 @@
     padding: 6px 14px;
     background: var(--bg);
     border-top: 1px solid var(--border);
-    font-family: monospace;
+    font-family: var(--font);
     font-size: 12px;
   }
   .bar {
@@ -40,7 +40,7 @@
     border-radius: 3px;
     overflow: hidden;
   }
-  .fill { height: 100%; background: #58d6a0; transition: width 0.15s; }
+  .fill { height: 100%; background: var(--ok); transition: width 0.15s; }
   .text {
     color: var(--muted);
     white-space: nowrap;
@@ -55,6 +55,6 @@
     padding: 3px 8px;
     border-radius: 4px;
     cursor: pointer;
-    font-family: monospace;
+    font-family: var(--font);
   }
 </style>
